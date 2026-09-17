@@ -1,0 +1,215 @@
+@import url('https://fonts.googleapis.com/css2?family=Crimson+Text:ital,wght@0,400;0,600;0,700;1,400&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,500;0,8..60,600;1,8..60,400&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-ruc-bg text-ruc-text font-body antialiased;
+  }
+
+  /* 全局选中色 */
+  ::selection {
+    @apply bg-ruc-red/15 text-ruc-text;
+  }
+}
+
+@layer components {
+  /* ─── 按钮 ─── */
+
+  .btn-primary {
+    @apply bg-ruc-red text-white font-ui font-medium px-5 py-2.5 rounded-lg
+           shadow-sm shadow-ruc-red/20
+           hover:bg-ruc-red-light hover:shadow-md hover:shadow-ruc-red/25 hover:-translate-y-0.5
+           active:bg-ruc-red-dark active:shadow-none active:translate-y-0
+           transition-all duration-200
+           disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:translate-y-0 disabled:hover:shadow-sm;
+  }
+
+  .btn-secondary {
+    @apply border border-ruc-border text-ruc-text font-ui font-medium px-5 py-2.5 rounded-lg
+           bg-white hover:bg-ruc-red-pale hover:border-ruc-red/40 hover:text-ruc-red
+           active:bg-ruc-red-soft active:border-ruc-red/60
+           transition-all duration-200;
+  }
+
+  .btn-danger {
+    @apply text-ruc-error font-ui font-medium px-4 py-2.5 rounded-lg
+           border border-ruc-error/20 bg-white
+           hover:bg-ruc-error-soft hover:border-ruc-error/60
+           active:bg-ruc-error/10
+           transition-all duration-200;
+  }
+
+  .btn-ghost {
+    @apply text-ruc-text-dim font-ui font-medium px-3 py-2 rounded-lg
+           hover:bg-ruc-bg hover:text-ruc-text
+           transition-all duration-200;
+  }
+
+  /* ─── 卡片 ─── */
+
+  .card {
+    @apply bg-ruc-card rounded-xl border border-ruc-divider shadow-card p-6
+           hover:shadow-elevated hover:border-ruc-border transition-all duration-300;
+  }
+
+  .card-flat {
+    @apply bg-ruc-card rounded-xl border border-ruc-divider p-6;
+  }
+
+  /* ─── 输入框 ─── */
+
+  .input-field {
+    @apply bg-ruc-card border border-ruc-border rounded-lg px-4 py-3
+           text-ruc-text font-ui placeholder-ruc-text-light
+           focus:outline-none focus:border-ruc-red/40 focus:ring-2 focus:ring-ruc-red/15
+           transition-all duration-150;
+  }
+
+  /* ─── 分割区域 ─── */
+
+  .section-divider {
+    @apply border-t border-ruc-divider;
+  }
+
+  /* 带标签的分割线 */
+  .section-label {
+    @apply flex items-center gap-3 text-xs font-ui font-medium text-ruc-text-light uppercase tracking-wider;
+  }
+  .section-label::before,
+  .section-label::after {
+    content: '';
+    @apply flex-1 h-px bg-ruc-divider;
+  }
+
+  /* ─── 标签 / 徽章 ─── */
+
+  .badge {
+    @apply inline-flex items-center gap-1 text-xs font-ui font-medium px-2.5 py-1 rounded-full;
+  }
+  .badge-red {
+    @apply badge bg-ruc-red-pale text-ruc-red border border-ruc-red/15;
+  }
+  .badge-success {
+    @apply badge bg-ruc-success-soft text-ruc-success border border-ruc-success/20;
+  }
+  .badge-dim {
+    @apply badge bg-ruc-bg text-ruc-text-dim border border-ruc-divider;
+  }
+  .badge-gold {
+    @apply badge bg-ruc-warm text-ruc-gold border border-ruc-gold/20;
+  }
+
+  /* ─── 激活态左边框 (用于文件树 / Tab) ─── */
+
+  .active-left {
+    @apply border-l-[3px] border-ruc-red bg-ruc-red-pale text-ruc-red font-medium;
+  }
+
+  /* ─── Avatar / 首字母徽标 ─── */
+
+  .logo-mark {
+    @apply w-9 h-9 rounded-lg bg-ruc-red flex items-center justify-center
+           shadow-sm shadow-ruc-red/25;
+  }
+  .logo-mark-text {
+    @apply text-white font-display font-bold text-lg;
+  }
+
+  /* ─── 状态点 ─── */
+
+  .dot-green {
+    @apply w-2 h-2 rounded-full bg-ruc-success;
+  }
+  .dot-red {
+    @apply w-2 h-2 rounded-full bg-ruc-error;
+  }
+}
+
+/* ─── Markdown 渲染 ─── */
+
+.markdown-body h1 {
+  @apply text-2xl font-display font-semibold text-ruc-red mb-5 mt-8 pb-2 border-b-2 border-ruc-red/15;
+}
+.markdown-body h2 {
+  @apply text-xl font-display font-semibold text-ruc-text mb-3 mt-6 pb-1.5 border-b border-ruc-divider;
+}
+.markdown-body h3 {
+  @apply text-lg font-display font-medium text-ruc-text mb-2 mt-5;
+}
+.markdown-body p {
+  @apply mb-4 leading-relaxed text-ruc-text;
+}
+.markdown-body ul,
+.markdown-body ol {
+  @apply mb-4 pl-6;
+}
+.markdown-body li {
+  @apply mb-1.5 text-ruc-text;
+}
+.markdown-body ul li {
+  @apply list-disc marker:text-ruc-red/40;
+}
+.markdown-body ol li {
+  @apply list-decimal marker:text-ruc-red/40;
+}
+.markdown-body blockquote {
+  @apply border-l-[3px] border-ruc-red/30 pl-4 italic text-ruc-text-dim my-5
+         bg-ruc-red-pale py-3 pr-4 rounded-r-lg;
+}
+.markdown-body code {
+  @apply bg-ruc-red-pale text-ruc-red-dark font-mono text-sm px-1.5 py-0.5 rounded;
+}
+.markdown-body pre {
+  @apply bg-ruc-bg font-mono text-sm p-4 rounded-lg overflow-x-auto mb-5
+         border border-ruc-divider;
+}
+.markdown-body table {
+  @apply w-full border-collapse mb-5 rounded-lg overflow-hidden border border-ruc-divider;
+}
+.markdown-body th {
+  @apply border-b-2 border-ruc-border bg-ruc-bg px-4 py-2.5 text-left font-ui font-semibold text-xs text-ruc-text uppercase tracking-wider;
+}
+.markdown-body td {
+  @apply border-b border-ruc-divider px-4 py-2.5 text-sm text-ruc-text;
+}
+.markdown-body tr:last-child td {
+  @apply border-b-0;
+}
+.markdown-body tr:hover td {
+  @apply bg-ruc-bg/50;
+}
+.markdown-body a {
+  @apply text-ruc-red font-medium hover:text-ruc-red-light underline underline-offset-2 decoration-ruc-red/20 hover:decoration-ruc-red/40 transition-colors;
+}
+.markdown-body hr {
+  @apply border-ruc-divider my-8;
+}
+.markdown-body img {
+  @apply rounded-lg shadow-card max-w-full my-4;
+}
+
+/* ─── 滚动条 ─── */
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  @apply bg-transparent;
+}
+::-webkit-scrollbar-thumb {
+  @apply bg-ruc-text-light/30 rounded-full hover:bg-ruc-text-dim/40 transition-colors;
+}
+
+/* ─── 全局动画 ─── */
+
+.animate-fade-in {
+  animation: fadeIn 0.25s ease-out;
+}
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}

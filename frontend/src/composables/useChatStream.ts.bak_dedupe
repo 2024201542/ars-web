@@ -1,0 +1,70 @@
+/** SSE 流式消息处理 */
+import { ref, computed } from 'vue'
+import { api } from '@/api'
+import { useSessionStore } from '@/stores/session'
+import { toast } from '@/composables/useToast'
+
+export function useChatStream(sessionId: string, emitDone: () => void) {
+  const sessionStore = useSessionStore()
+  
+  const isStreaming = ref(false)
+  const resultContent = ref('')
+  const progressTokens = ref(0)
+  const progressPhase = ref('')
+  const lastToolUse = ref('')
+
+  const statusText = computed(() => {
+    if (progressPhase.value === 'init') return '正在启动引擎…'
+    if (lastToolUse.value) return `正在执行：${lastToolUse.value}`
+    const t = progressTokens.value
+    if (t < 50) return '正在阅读研究资料…'
+    if (t < 200) return '正在分析核心问题…'
+    if (t < 600) return '正在检索相关文献…'
+    if (t < 1200) return '正在深度分析…'
+    if (t < 2500) return '正在综合多方信息…'
+    if (t < 5000) return '正在组织回答…'
+    return `正在整理内容 (${(t/1000).toFixed(1)}k tokens)…`
+  })
+
+  function _parseLine(line: string, p: { evt: string; dat: string }, f: (d: any) => void) {
+    const t = line.trimEnd()
+    if (!t || t === ': heartbeat') { if (p.evt) { try { f(JSON.parse(p.dat)) } catch {} p.evt=''; p.dat='' } return }
+    if (t.startsWith(':') && t !== ': heartbeat') return
+    if (t.startsWith('event: ')) { if (p.evt) try { f(JSON.parse(p.dat)) } catch {} p.evt = t.slice(7).trim(); p.dat = ''; return }
+    if (t.startsWith('data: ')) { p.dat += (p.dat ? '\n' : '') + t.slice(6) }
+  }
+
+  async function sendMessage(msg: string, modelToUse?: string) {
+    if (isStreaming.value) return
+    isStreaming.value = true; resultContent.value = ''
+    progressTokens.value = 0; progressPhase.value = ''; lastToolUse.value = ''
+
+    const uid = Date.now()
+    sessionStore.addMessage({ id: uid, session_id: sessionId, role: 'user', content: msg, agent_name: null, phase_name: null, metadata: null, created_at: new Date().toISOString() })
+    const aid = uid + 1
+    sessionStore.addMessage({ id: aid, session_id: sessionId, role: 'assistant', content: '', agent_name: null, phase_name: null, metadata: null, created_at: new Date().toISOString() })
+
+    let last = Date.now()
+    try {
+      const r = await api.chatSSE(sessionId, msg, modelToUse)
+      if (!r.ok) { const e = await r.json().catch(()=>({detail:`${r.status}`})); throw new Error(e.detail||'请求失败') }
+      if (!r.body) throw new Error('无响应流')
+      const rd = r.body.getReader(); const dc = new TextDecoder()
+      let buf = ''; const pen = { evt: '', dat: '' }
+      function fl(d: any) { last = Date.now()
+        if (pen.evt === 'message' && d.delta) { resultContent.value += d.delta; const ms = sessionStore.messages; const l = ms[ms.length-1]; if (l&&l.role==='assistant') { l._streaming=true; l._rawContent=resultContent.value; l.content=resultContent.value } }
+        else if (pen.evt === 'progress') { progressTokens.value = d.tokens||0; progressPhase.value = d.phase||'' }
+        else if (pen.evt === 'phase_start' && d.phase === 'tool') { lastToolUse.value = d.description||'' }
+        else if (pen.evt === 'done') { const ms=sessionStore.messages; const l=ms[ms.length-1]; if (l&&l.role==='assistant'){l._streaming=false;l.content=l._rawContent||l.content}; emitDone() }
+      }
+      try { while (true) { const { done, value } = await rd.read()
+        if (done) { buf+=dc.decode(); buf.split('\n').forEach((l: string)=>_parseLine(l,pen,fl)); if (pen.evt) fl(JSON.parse(pen.dat)); break }
+        buf+=dc.decode(value,{stream:true}); const ls=buf.split('\n'); buf=ls.pop()||''; ls.forEach((l: string)=>_parseLine(l,pen,fl))
+        if (Date.now()-last>30000){toast.warning('连接可能已中断…'); last=Date.now()} }
+      } finally { try { rd.releaseLock() } catch {} }
+    } catch (e: any) { if (e.name !== 'AbortError') resultContent.value += `\n\n> **⚠️ ${e.message||'未知错误'}**\n` }
+    finally { isStreaming.value = false; emitDone() }
+  }
+
+  return { isStreaming, resultContent, progressTokens, progressPhase, lastToolUse, statusText, sendMessage, abort: ()=> { isStreaming.value = false } }
+}
