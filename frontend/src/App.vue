@@ -34,7 +34,13 @@ document.addEventListener('keydown', onKeydown)
 
 onMounted(async () => {
   const ok = await auth.checkAuth()
-  if (!ok) { router.push('/login'); return }
+  if (!ok) {
+    const cur = router.currentRoute.value
+    if (cur.name !== 'login' && !cur.meta.guest && !cur.meta.public) {
+      router.push({ path: '/login', query: { redirect: cur.fullPath } })
+    }
+    return
+  }
   settings.load()
 })
 </script>

@@ -52,6 +52,15 @@ export const useSettingsStore = defineStore('settings', () => {
     // 本地乐观更新
     prov.key_configured = !!key
     isConfigured.value = providers.value.some(p => p.key_configured)
+
+    // 当前模型所属提供商若未配 Key，自动切到刚保存的提供商的第一个模型
+    // （否则聊天仍走默认 deepseek-chat，后端会报「尚未配置 DeepSeek」）
+    const cur = models.value.find(m => m.id === selectedModel.value)
+    const curOk = cur && providers.value.find(p => p.id === cur.provider)?.key_configured
+    if (!curOk) {
+      const first = models.value.find(m => m.provider === providerId)
+      if (first) await setModel(first.id)
+    }
   }
 
   async function saveBaseUrl(providerId: string, url: string) {

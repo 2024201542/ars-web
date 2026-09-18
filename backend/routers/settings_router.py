@@ -56,8 +56,8 @@ async def get_settings(user_id: str = Depends(get_user_id)):
 async def update_settings(req: SettingsUpdate, user_id: str = Depends(get_user_id)):
     """更新当前用户设置。"""
     data = req.model_dump(exclude_none=True)
-    for key, value in data.items():
-        await state_tracker.set_setting(key, value, user_id)
+    if data:
+        await state_tracker.set_settings_batch(data, user_id)
     return {"ok": True, "message": "设置已更新"}
 
 

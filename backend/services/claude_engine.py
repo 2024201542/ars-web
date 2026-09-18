@@ -16,9 +16,11 @@ import asyncio
 import json
 import os
 import shutil
+import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import AsyncGenerator, Optional
+from typing import AsyncGenerator, Optional, Union
 
 from config import ARS_SKILLS_PATH, WORKSPACE_DIR
 from services.state_tracker import tracker as state_tracker
@@ -30,9 +32,15 @@ def _find_claude_bin() -> str:
         return env_bin
     which = shutil.which("claude")
     if which:
+        # Windows: npm 的 claude.cmd 转调 bin/claude.exe；优先用 .exe 避免 asyncio 子进程问题
+        if which.lower().endswith(".cmd") or which.lower().endswith(".bat"):
+            exe = Path(which).resolve().parent / "node_modules" / "@anthropic-ai" / "claude-code" / "bin" / "claude.exe"
+            if exe.exists():
+                return str(exe)
         return which
 
     candidates = [
+        str(Path.home() / "AppData/Roaming/npm/node_modules/@anthropic-ai/claude-code/bin/claude.exe"),
         os.path.expanduser("~/.local/bin/claude"),
         "/usr/local/bin/claude",
         "/opt/homebrew/bin/claude",
@@ -61,11 +69,77 @@ def _find_claude_bin() -> str:
 CLAUDE_BIN = _find_claude_bin()
 
 
+def claude_session_exists(session_id: str) -> bool:
+    """本机会话是否已在 Claude CLI 里建立。协作副本只有数据库消息，没有这份会话。"""
+    projects = Path.home() / ".claude" / "projects"
+    if not projects.is_dir():
+        return False
+    return any(projects.glob(f"**/{session_id}.jsonl"))
+
+
+def _safe_kill(proc: Union[asyncio.subprocess.Process, subprocess.Popen]) -> None:
+    """终止子进程；进程已退出时忽略 ProcessLookupError。"""
+    try:
+        if proc.poll() is None if isinstance(proc, subprocess.Popen) else proc.returncode is None:
+            proc.terminate()
+    except ProcessLookupError:
+        pass
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+
+async def _spawn_cli(cmd: list[str], env: dict, cwd: str):
+    """启动 Claude CLI。Windows 上 uvicorn 使用 SelectorEventLoop，不支持 asyncio 子进程。"""
+    if sys.platform == "win32":
+        return subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            cwd=cwd,
+        )
+    return await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env=env,
+        cwd=cwd,
+    )
+
+
+async def _read_stdout_chunk(proc, timeout: float = 15.0) -> bytes:
+    """读取一段 stdout；超时返回特殊 sentinel 由调用方发 heartbeat。"""
+    if isinstance(proc, subprocess.Popen):
+        assert proc.stdout is not None
+        try:
+            return await asyncio.wait_for(asyncio.to_thread(proc.stdout.read, 4096), timeout=timeout)
+        except asyncio.TimeoutError:
+            raise
+    assert proc.stdout is not None
+    return await asyncio.wait_for(proc.stdout.read(4096), timeout=timeout)
+
+
+async def _read_stderr_text(proc, timeout: float = 2.0) -> str:
+    if proc.stderr is None:
+        return ""
+    try:
+        if isinstance(proc, subprocess.Popen):
+            data = await asyncio.wait_for(asyncio.to_thread(proc.stderr.read), timeout=timeout)
+        else:
+            data = await asyncio.wait_for(proc.stderr.read(), timeout=timeout)
+        return data.decode("utf-8", errors="replace").strip()
+    except asyncio.TimeoutError:
+        return ""
+
+
 class ClaudeEngine:
     """管理 Claude CLI 子进程，提供流式对话能力。"""
 
     def __init__(self):
-        self._active: dict[str, asyncio.subprocess.Process] = {}
+        self._active: dict[str, Union[asyncio.subprocess.Process, subprocess.Popen]] = {}
         self._locks: dict[str, asyncio.Lock] = {}
 
     def _get_lock(self, session_id: str) -> asyncio.Lock:
@@ -150,30 +224,56 @@ class ClaudeEngine:
                 child_env["ANTHROPIC_BASE_URL"] = base_url
 
             # ── 启动子进程（cwd 指向工作区，Write 工具默认写入该目录） ──
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=child_env,
-                cwd=str(ws_dir),
-            )
+            if not Path(CLAUDE_BIN).exists() and shutil.which(CLAUDE_BIN) is None:
+                yield {
+                    "event": "error",
+                    "data": {
+                        "code": "CLAUDE_CLI_MISSING",
+                        "message": (
+                            "本机未安装 Claude Code CLI，无法发起对话。"
+                            "请先安装 @anthropic-ai/claude-code，或设置环境变量 CLAUDE_BIN 指向 claude 可执行文件。"
+                            "（ARS Web 的所有模型都通过 Claude CLI 调用，包括 DeepSeek。）"
+                        ),
+                    },
+                }
+                return
+
+            try:
+                proc = await _spawn_cli(cmd, child_env, str(ws_dir))
+            except FileNotFoundError:
+                yield {
+                    "event": "error",
+                    "data": {
+                        "code": "CLAUDE_CLI_MISSING",
+                        "message": f"无法启动 Claude CLI（{CLAUDE_BIN}）。请安装 Claude Code 或设置 CLAUDE_BIN。",
+                    },
+                }
+                return
+            except NotImplementedError:
+                yield {
+                    "event": "error",
+                    "data": {
+                        "code": "ENGINE_ERROR",
+                        "message": "当前事件循环不支持子进程（Windows/uvicorn）。请重启后端或升级引擎。",
+                    },
+                }
+                return
             self._active[session_id] = proc
 
             try:
-                stdout = proc.stdout
-                if stdout is None:
+                if proc.stdout is None:
                     yield {"event": "error", "data": {"code": "SUBPROCESS_ERROR", "message": "子进程无 stdout"}}
                     return
 
                 buffer = b""
                 while True:
                     if cancel_event.is_set():
-                        proc.terminate()
+                        _safe_kill(proc)
                         yield {"event": "error", "data": {"code": "STOPPED", "message": "用户中断"}}
                         return
 
                     try:
-                        chunk = await asyncio.wait_for(stdout.read(4096), timeout=15)
+                        chunk = await _read_stdout_chunk(proc, timeout=15)
                     except asyncio.TimeoutError:
                         yield {"event": "heartbeat", "data": {}}
                         continue
@@ -204,17 +304,21 @@ class ClaudeEngine:
                     except json.JSONDecodeError:
                         pass
 
-                try:
-                    _, stderr_data = await asyncio.wait_for(proc.communicate(), timeout=1)
-                    if stderr_data:
-                        stderr_text = stderr_data.decode("utf-8", errors="replace").strip()
-                        if stderr_text and "Error:" in stderr_text:
-                            yield {"event": "error", "data": {"code": "CLI_ERROR", "message": stderr_text}}
-                            return
-                except asyncio.TimeoutError:
-                    proc.terminate()
+                stderr_text = await _read_stderr_text(proc, timeout=2)
+                if isinstance(proc, subprocess.Popen):
+                    try:
+                        await asyncio.wait_for(asyncio.to_thread(proc.wait), timeout=5)
+                    except asyncio.TimeoutError:
+                        _safe_kill(proc)
+                else:
+                    try:
+                        await asyncio.wait_for(proc.wait(), timeout=5)
+                    except asyncio.TimeoutError:
+                        _safe_kill(proc)
 
-                await proc.wait()
+                if stderr_text and ("Error:" in stderr_text or "error" in stderr_text.lower()):
+                    yield {"event": "error", "data": {"code": "CLI_ERROR", "message": stderr_text[:2000]}}
+                    return
 
                 try:
                     await self._save_claude_response(session_id)
@@ -224,11 +328,12 @@ class ClaudeEngine:
                 yield {"event": "done", "data": {"message": "Claude 回应完成"}}
 
             except asyncio.CancelledError:
-                proc.terminate()
+                _safe_kill(proc)
                 yield {"event": "error", "data": {"code": "STOPPED", "message": "任务取消"}}
             except Exception as e:
-                proc.terminate()
-                yield {"event": "error", "data": {"code": "ENGINE_ERROR", "message": str(e)}}
+                _safe_kill(proc)
+                msg = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
+                yield {"event": "error", "data": {"code": "ENGINE_ERROR", "message": msg}}
             finally:
                 self._active.pop(session_id, None)
 
@@ -272,7 +377,8 @@ class ClaudeEngine:
             return None
 
         if evt_type == "result" and evt.get("is_error"):
-            return {"event": "error", "data": {"code": "CLI_ERROR", "message": evt.get("result", "未知错误")}}
+            msg = (evt.get("result") or "").strip() or "模型没有返回内容。若这是接续会话，请再发一次。"
+            return {"event": "error", "data": {"code": "CLI_ERROR", "message": msg}}
 
         if evt_type == "assistant":
             content_list = evt.get("message", {}).get("content", [])

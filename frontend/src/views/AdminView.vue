@@ -45,9 +45,17 @@ async function loadData() {
 }
 
 async function createUser() {
-  if (!newUsername.value.trim() || !newPassword.value.trim()) return
+  const username = newUsername.value.trim()
+  const password = newPassword.value.trim()
+  if (!username) { toast.error('请填写用户名'); return }
+  if (password.length < 4) { toast.error('密码至少 4 位'); return }
   try {
-    await api.post('/admin/users', { username: newUsername.value.trim(), password: newPassword.value.trim(), display_name: newUsername.value.trim(), role: 'user' })
+    await api.post('/admin/users', {
+      username,
+      password,
+      display_name: username,
+      role: 'user',
+    })
     toast.success('用户已创建')
     newUsername.value = ''
     newPassword.value = ''

@@ -26,9 +26,9 @@ def _now() -> str:
 
 
 class DatabasePool:
-    """SQLite 连接池，提高并发性能。"""
+    """SQLite 连接池。写操作由 StateTracker 串行化，避免 database is locked。"""
     
-    def __init__(self, db_path: str, pool_size: int = 5):
+    def __init__(self, db_path: str, pool_size: int = 3):
         self.db_path = db_path
         self.pool_size = pool_size
         self._pool: asyncio.Queue = asyncio.Queue(maxsize=pool_size)
@@ -47,8 +47,9 @@ class DatabasePool:
             for _ in range(self.pool_size):
                 conn = await aiosqlite.connect(self.db_path)
                 await conn.execute("PRAGMA journal_mode=WAL")
+                await conn.execute("PRAGMA synchronous=NORMAL")
                 await conn.execute("PRAGMA foreign_keys=ON")
-                await conn.execute("PRAGMA busy_timeout=5000")  # 5秒超时
+                await conn.execute("PRAGMA busy_timeout=30000")  # 等锁最多 30 秒
                 conn.row_factory = aiosqlite.Row
                 await self._pool.put(conn)
             
@@ -82,19 +83,26 @@ class StateTracker:
     def __init__(self, db_path: Optional[str] = None):
         self.db_path = db_path or str(DB_PATH)
         self._initialized = False
-        self._pool = DatabasePool(self.db_path, pool_size=5)
+        self._pool = DatabasePool(self.db_path, pool_size=3)
         self._lock = asyncio.Lock()
+        self._write_lock = asyncio.Lock()  # SQLite 写串行，防止 database is locked
 
     async def _execute(self, sql: str, params=None):
         """执行 SQL 语句，写操作自动提交（确保提交在同一连接上）。"""
+        upper = sql.strip().upper()
+        is_write = any(upper.startswith(kw) for kw in ('INSERT', 'UPDATE', 'DELETE', 'CREATE', 'ALTER', 'DROP'))
+        if is_write:
+            async with self._write_lock:
+                return await self._execute_unlocked(sql, params, commit=True)
+        return await self._execute_unlocked(sql, params, commit=False)
+
+    async def _execute_unlocked(self, sql: str, params=None, commit: bool = False):
         async with self._pool.get_connection() as db:
             if params is not None:
                 cursor = await db.execute(sql, params)
             else:
                 cursor = await db.execute(sql)
-            # 写操作自动在同一连接上提交，避免跨连接提交导致数据丢失
-            upper = sql.strip().upper()
-            if any(upper.startswith(kw) for kw in ('INSERT', 'UPDATE', 'DELETE', 'CREATE', 'ALTER', 'DROP')):
+            if commit:
                 await db.commit()
             return cursor
 
@@ -152,12 +160,12 @@ class StateTracker:
                         FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
                     );
                     CREATE TABLE IF NOT EXISTS settings (
-                        key TEXT PRIMARY KEY,
                         user_id TEXT NOT NULL DEFAULT 'default',
+                        key TEXT NOT NULL,
                         value TEXT,
-                        updated_at TEXT NOT NULL
+                        updated_at TEXT NOT NULL,
+                        PRIMARY KEY (user_id, key)
                     );
-                    CREATE UNIQUE INDEX IF NOT EXISTS idx_settings_user_key ON settings(user_id, key);
                     CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
                     CREATE INDEX IF NOT EXISTS idx_artifacts_session ON artifacts(session_id);
                     CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
@@ -169,6 +177,32 @@ class StateTracker:
                         await db.execute(f"ALTER TABLE {tbl} ADD COLUMN {col} TEXT NOT NULL DEFAULT {defval}")
                     except Exception:
                         pass
+
+                # Migration: settings 旧表用 key 单列主键，多用户无法各自存 API Key
+                try:
+                    row = await (await db.execute(
+                        "SELECT sql FROM sqlite_master WHERE type='table' AND name='settings'"
+                    )).fetchone()
+                    schema = (row[0] if row else "") or ""
+                    if "key TEXT PRIMARY KEY" in schema or (
+                        "PRIMARY KEY" in schema and "PRIMARY KEY (user_id, key)" not in schema
+                        and "PRIMARY KEY(user_id, key)" not in schema
+                    ):
+                        await db.executescript("""
+                            CREATE TABLE IF NOT EXISTS settings_v2 (
+                                user_id TEXT NOT NULL DEFAULT 'default',
+                                key TEXT NOT NULL,
+                                value TEXT,
+                                updated_at TEXT NOT NULL,
+                                PRIMARY KEY (user_id, key)
+                            );
+                            INSERT OR IGNORE INTO settings_v2 (user_id, key, value, updated_at)
+                                SELECT COALESCE(user_id, 'default'), key, value, updated_at FROM settings;
+                            DROP TABLE settings;
+                            ALTER TABLE settings_v2 RENAME TO settings;
+                        """)
+                except Exception:
+                    pass
 
                 await db.commit()
             self._initialized = True
@@ -337,17 +371,37 @@ class StateTracker:
         await self._ensure_initialized()
         store_value = encrypt_value(value) if key in _ENCRYPTED_SETTING_KEYS else value
         now = _now()
-        # UPDATE 优先（大多数场景 key 已存在），失败则 INSERT
-        cursor = await self._execute(
-            "UPDATE settings SET value = ?, updated_at = ? WHERE user_id = ? AND key = ?",
-            (store_value, now, user_id, key),
-        )
-        if cursor.rowcount == 0:
-            await self._execute(
-                "INSERT INTO settings (user_id, key, value, updated_at) VALUES (?, ?, ?, ?)",
-                (user_id, key, store_value, now),
-            )
-        await self._commit()
+        async with self._write_lock:
+            async with self._pool.get_connection() as db:
+                cursor = await db.execute(
+                    "UPDATE settings SET value = ?, updated_at = ? WHERE user_id = ? AND key = ?",
+                    (store_value, now, user_id, key),
+                )
+                if cursor.rowcount == 0:
+                    await db.execute(
+                        "INSERT INTO settings (user_id, key, value, updated_at) VALUES (?, ?, ?, ?)",
+                        (user_id, key, store_value, now),
+                    )
+                await db.commit()
+
+    async def set_settings_batch(self, data: dict, user_id: str = "default"):
+        """同一事务批量写入设置，减少锁竞争。"""
+        await self._ensure_initialized()
+        now = _now()
+        async with self._write_lock:
+            async with self._pool.get_connection() as db:
+                for key, value in data.items():
+                    store_value = encrypt_value(value) if key in _ENCRYPTED_SETTING_KEYS else value
+                    cursor = await db.execute(
+                        "UPDATE settings SET value = ?, updated_at = ? WHERE user_id = ? AND key = ?",
+                        (store_value, now, user_id, key),
+                    )
+                    if cursor.rowcount == 0:
+                        await db.execute(
+                            "INSERT INTO settings (user_id, key, value, updated_at) VALUES (?, ?, ?, ?)",
+                            (user_id, key, store_value, now),
+                        )
+                await db.commit()
 
     async def get_settings(self, user_id: str = "default") -> dict:
         await self._ensure_initialized()

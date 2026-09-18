@@ -13,7 +13,7 @@ from models.message import ChatRequest
 from services.state_tracker import tracker as state_tracker
 from services.user_manager import get_user_id
 from logging_config import get_logger
-from services.claude_engine import engine as claude
+from services.claude_engine import claude_session_exists, engine as claude
 
 router = APIRouter(prefix="/api/sessions", tags=["chat"])
 
@@ -42,8 +42,37 @@ async def chat(request: Request, session_id: str, req: ChatRequest, user_id: str
         effective_base_url = PROXY_BASE_URL
 
     stored_messages = await state_tracker.get_messages(session_id)
-    is_first = len(stored_messages) == 0
-    await state_tracker.add_message(session_id, "user", req.message)
+    # 数据库里有克隆来的旧消息，不代表 Claude CLI 已经有这个会话
+    is_first = not claude_session_exists(session_id)
+    prompt = req.message
+    if is_first and stored_messages:
+        lines = []
+        for m in stored_messages[-8:]:
+            text = (m.get("content") or "").strip()
+            if not text:
+                continue
+            who = "用户" if m.get("role") == "user" else "助手"
+            lines.append(f"{who}：{text[:800]}")
+        if lines:
+            prompt = (
+                "以下是这份文稿已有的对话，请据此继续，不要重复整段历史。\n\n"
+                + "\n\n".join(lines)
+                + "\n\n---\n当前要处理的新消息：\n"
+                + req.message
+            )
+    author_name = user_id[:8]
+    try:
+        rows = await state_tracker._fetchall(
+            "SELECT username, display_name FROM users WHERE id = ?", (user_id,)
+        )
+        if rows:
+            r = dict(rows[0])
+            author_name = r.get("display_name") or r.get("username") or author_name
+    except Exception:
+        pass
+    user_meta = json.dumps({"author": author_name, "author_id": user_id}, ensure_ascii=False)
+    assistant_meta = json.dumps({"author": "助手", "author_id": user_id}, ensure_ascii=False)
+    await state_tracker.add_message(session_id, "user", req.message, metadata=user_meta)
 
     cancel_event = asyncio.Event()
     _active_generations[session_id] = cancel_event
@@ -54,7 +83,7 @@ async def chat(request: Request, session_id: str, req: ChatRequest, user_id: str
         try:
             async for evt in claude.chat(
                 session_id=session_id,
-                message=req.message,
+                message=prompt,
                 cancel_event=cancel_event,
                 skill_name=session.get("skill_name", ""),
                 api_key=api_key,
@@ -74,16 +103,18 @@ async def chat(request: Request, session_id: str, req: ChatRequest, user_id: str
                     yield f"event: {evt_type}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
         except Exception as e:
             saw_error = True
+            _log.exception("chat stream failed session=%s", session_id)
+            msg = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
             yield (
                 "event: error\ndata: "
-                + json.dumps({"code": "INTERNAL_ERROR", "message": str(e)}, ensure_ascii=False)
+                + json.dumps({"code": "INTERNAL_ERROR", "message": msg}, ensure_ascii=False)
                 + "\n\n"
             )
         finally:
             full = "".join(assistant_parts).strip()
             try:
                 if full:
-                    await state_tracker.add_message(session_id, "assistant", full)
+                    await state_tracker.add_message(session_id, "assistant", full, metadata=assistant_meta)
                     if not saw_error:
                         await state_tracker.update_session_status(session_id, "completed")
                 elif saw_error:

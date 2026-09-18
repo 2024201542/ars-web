@@ -4,7 +4,7 @@ import { api } from '@/api'
 import { useSessionStore } from '@/stores/session'
 import { toast } from '@/composables/useToast'
 
-export function useChatStream(sessionId: string, emitDone: () => void) {
+export function useChatStream(getSessionId: () => string, emitDone: () => void) {
   const sessionStore = useSessionStore()
   
   const isStreaming = ref(false)
@@ -49,7 +49,7 @@ export function useChatStream(sessionId: string, emitDone: () => void) {
     if (!lastAssistant()) {
       sessionStore.addMessage({
         id: Date.now() + 1,
-        session_id: sessionId,
+        session_id: getSessionId(),
         role: 'assistant',
         content: '',
         agent_name: null,
@@ -61,7 +61,7 @@ export function useChatStream(sessionId: string, emitDone: () => void) {
 
     let last = Date.now()
     try {
-      const r = await api.chatSSE(sessionId, msg, modelToUse)
+      const r = await api.chatSSE(getSessionId(), msg, modelToUse)
       if (!r.ok) { const e = await r.json().catch(()=>({detail:`${r.status}`})); throw new Error(e.detail||'请求失败') }
       if (!r.body) throw new Error('无响应流')
       const rd = r.body.getReader(); const dc = new TextDecoder()

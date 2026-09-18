@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from slowapi.middleware import SlowAPIMiddleware
 
 from deps import limiter
-from routers import session, chat, export, skills, settings_router, proxy, workspace, auth, admin, share
+from routers import session, chat, export, skills, settings_router, proxy, workspace, auth, admin, share, collab
 
 
 @asynccontextmanager
@@ -101,6 +101,7 @@ app.include_router(session.router)
 app.include_router(chat.router)
 app.include_router(export.router)
 app.include_router(share.router)
+app.include_router(collab.router)
 app.include_router(settings_router.router)
 app.include_router(workspace.router)
 app.include_router(admin.router)

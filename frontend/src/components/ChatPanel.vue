@@ -2,11 +2,13 @@
 import { ref, nextTick, watch, computed } from 'vue'
 import { useSessionStore } from '@/stores/session'
 import { useSettingsStore } from '@/stores/settings'
+import { useAuthStore } from '@/stores/auth'
 import { useToast } from '@/composables/useToast'
 import { useChatStream } from '@/composables/useChatStream'
 import { api } from '@/api'
 import ExportButton from './ExportButton.vue'
 import ShareButton from './ShareButton.vue'
+import CollabButton from './CollabButton.vue'
 import SkillGuide from './SkillGuide.vue'
 import FileMentionPopup from './FileMentionPopup.vue'
 import MarkdownIt from 'markdown-it'
@@ -16,10 +18,11 @@ const props = defineProps<{ sessionId: string; skillName?: string; modeName?: st
 const emit = defineEmits<{ done: [] }>()
 const sessionStore = useSessionStore()
 const settingsStore = useSettingsStore()
+const auth = useAuthStore()
 const toast = useToast()
 
 const { isStreaming, resultContent, progressTokens, progressPhase, lastToolUse, statusText, sendMessage: streamSend, abort } =
-  useChatStream(props.sessionId, () => emit('done'))
+  useChatStream(() => props.sessionId, () => emit('done'))
 
 const inputMessage = ref('')
 const chatContainer = ref<HTMLElement | null>(null)
@@ -230,6 +233,16 @@ async function maybeSaveTitle(display: string) {
   } catch {}
 }
 
+function authorLabel(msg: { role: string; metadata?: string | null }) {
+  if (!msg.metadata) return ''
+  try {
+    const meta = typeof msg.metadata === 'string' ? JSON.parse(msg.metadata) : msg.metadata
+    return meta?.author || ''
+  } catch {
+    return ''
+  }
+}
+
 async function doSend(msg: string) {
   if (sendingLock.value || isStreaming.value || !settingsStore.isConfigured) {
     if (!settingsStore.isConfigured) toast.info('请先配置 API Key')
@@ -243,7 +256,9 @@ async function doSend(msg: string) {
     fullMsg = msg ? `${ctx.join('\n\n')}\n---\n用户问题: ${msg}` : `${ctx.join('\n\n')}\n---\n请分析以上文件内容`
   }
   const display = attachedFiles.value.length ? attachedFiles.value.map((f: any) => `📎 ${f.name}`).join(' ') + (msg ? '\n' + msg : '') : msg
-  sessionStore.addMessage({ id: Date.now(), session_id: props.sessionId, role: 'user', content: display, agent_name: null, phase_name: null, metadata: null, created_at: new Date().toISOString() })
+  const author = auth.user?.display_name || auth.user?.username || ''
+  const metadata = author ? JSON.stringify({ author }) : null
+  sessionStore.addMessage({ id: Date.now(), session_id: props.sessionId, role: 'user', content: display, agent_name: null, phase_name: null, metadata, created_at: new Date().toISOString() })
   void maybeSaveTitle(display)
   const aid = Date.now() + 1
   sessionStore.addMessage({ id: aid, session_id: props.sessionId, role: 'assistant', content: '', agent_name: null, phase_name: null, metadata: null, created_at: new Date().toISOString() })
@@ -282,17 +297,30 @@ function renderMarkdown(t: string) { return t ? md.render(t) : '' }
         <button v-if="msg.role==='assistant' && msg.content" @click="toggleSelect(msg.id)" class="flex-shrink-0 mt-3 p-0.5 rounded-full transition-all" :class="selectedIds.has(msg.id)?'text-ruc-red opacity-100':'text-ruc-text-light opacity-0 group-hover:opacity-100'"><CheckCircle v-if="selectedIds.has(msg.id)" class="w-4 h-4" /><Circle v-else class="w-4 h-4" /></button>
         <div class="max-w-[80%] sm:max-w-[72%] rounded-2xl px-4 py-3 relative group" :class="msg.role==='user'?'bg-ruc-warm border border-ruc-divider':'bg-white border border-ruc-divider shadow-sm'">
           <button v-if="msg.role==='assistant' && msg.content" @click="copyContent(msg.content!,msg.id)" class="absolute -top-1.5 -right-1.5 opacity-0 group-hover:opacity-100 transition-all p-1.5 rounded-lg bg-white border border-ruc-divider shadow-elevated hover:border-ruc-red/30" title="复制"><Check v-if="copiedId===msg.id" class="w-3 h-3 text-ruc-success" /><Copy v-else class="w-3 h-3 text-ruc-text-dim" /></button>
-          <div v-if="msg.role==='user'" class="text-ruc-text font-ui text-sm whitespace-pre-wrap leading-relaxed">{{ msg.content }}</div>
-          <div v-else-if="msg._streaming && msg.content" class="text-ruc-text font-ui text-sm whitespace-pre-wrap leading-relaxed">{{ msg.content }}<span class="inline-block w-0.5 h-4 bg-ruc-red ml-0.5 animate-pulse align-middle" /></div>
-          <div v-else-if="msg.content" class="markdown-body text-sm" :class="{'ring-2 ring-ruc-red/20 rounded-lg':selectedIds.has(msg.id)}" v-html="renderMarkdown(msg.content!)" />
+          <div v-if="msg.role==='user'" class="text-ruc-text font-ui text-sm whitespace-pre-wrap leading-relaxed">
+            <p v-if="authorLabel(msg)" class="text-[10px] text-ruc-red/80 mb-1">{{ authorLabel(msg) }}</p>
+            {{ msg.content }}
+          </div>
+          <div v-else-if="msg._streaming && msg.content" class="text-ruc-text font-ui text-sm whitespace-pre-wrap leading-relaxed">
+            <p v-if="authorLabel(msg)" class="text-[10px] text-ruc-text-dim mb-1">{{ authorLabel(msg) }}</p>
+            {{ msg.content }}<span class="inline-block w-0.5 h-4 bg-ruc-red ml-0.5 animate-pulse align-middle" />
+          </div>
+          <div v-else-if="msg.content" class="markdown-body text-sm" :class="{'ring-2 ring-ruc-red/20 rounded-lg':selectedIds.has(msg.id)}">
+            <p v-if="authorLabel(msg)" class="text-[10px] text-ruc-text-dim mb-1 not-prose">{{ authorLabel(msg) }}</p>
+            <div v-html="renderMarkdown(msg.content!)" />
+          </div>
           <div v-else class="py-1"><div class="flex items-center gap-2.5 text-ruc-text-dim font-ui text-sm"><Loader2 class="w-4 h-4 animate-spin text-ruc-red/50" /><span class="animate-pulse-soft">{{ statusText }}</span></div><div class="mt-2 h-1.5 bg-ruc-bg rounded-full overflow-hidden w-full max-w-[300px]"><div class="h-full bg-ruc-red/30 rounded-full transition-all duration-500 ease-out" :style="{width:Math.min(100,Math.max(5,(progressTokens/50)*2))+'%'}" /></div></div>
         </div>
       </div>
     </div>
     <button v-if="showScrollBtn && !isStreaming" @click="scrollToBottom(true)" class="absolute bottom-[120px] left-1/2 -translate-x-1/2 z-10 px-3 py-1.5 rounded-full bg-white border border-ruc-divider shadow-elevated text-xs font-ui text-ruc-text-dim hover:text-ruc-red hover:border-ruc-red/30 transition-all animate-fade-in">↓ 回到底部</button>
     <div v-if="selectedIds.size>0" class="flex-shrink-0 px-4 sm:px-6 py-2 border-t border-ruc-divider bg-ruc-red-pale flex items-center justify-between gap-3"><span class="text-xs font-ui text-ruc-red font-medium">已选择 {{ selectedIds.size }} 条</span><div class="flex items-center gap-2"><button @click="clearSelection" class="text-xs font-ui text-ruc-text-dim hover:text-ruc-text px-2 py-1 rounded-lg hover:bg-ruc-bg transition-colors">取消</button><button @click="exportMarkdown" class="btn-primary text-xs !py-1.5 !px-3 flex items-center gap-1"><Download class="w-3 h-3" />导出 Markdown</button></div></div>
-    <div v-if="sessionStore.messages.length && !isStreaming" class="flex-shrink-0 px-4 sm:px-6 py-2 border-t border-ruc-divider flex items-center gap-3 bg-white/50"><ShareButton :session-id="sessionId" />
-<ExportButton :session-id="sessionId" /><span class="text-xs font-ui text-ruc-text-light">{{ sessionStore.messages.length }} 条消息<template v-if="resultContent"> · 最近回复 {{ resultContent.length }} 字</template></span></div>
+    <div v-if="sessionStore.messages.length && !isStreaming" class="flex-shrink-0 px-4 sm:px-6 py-2 border-t border-ruc-divider flex items-center gap-3 bg-white/50 flex-wrap">
+      <CollabButton :session-id="sessionId" />
+      <ShareButton :session-id="sessionId" />
+      <ExportButton :session-id="sessionId" />
+      <span class="text-xs font-ui text-ruc-text-light">{{ sessionStore.messages.length }} 条消息<template v-if="resultContent"> · 最近回复 {{ resultContent.length }} 字</template></span>
+    </div>
     <div class="flex-shrink-0 border-t border-ruc-divider bg-white/80 backdrop-blur-md px-4 sm:px-6 py-3">
       <div v-if="isStreaming" class="flex items-center gap-2 mb-2 text-xs font-ui"><Loader2 class="w-3 h-3 animate-spin text-ruc-red/60" /><span class="text-ruc-text-dim">{{ statusText }}</span><span v-if="progressTokens>0" class="text-ruc-text-light ml-auto">{{ progressTokens }} tokens</span></div>
       <div class="flex gap-2.5 items-end relative">

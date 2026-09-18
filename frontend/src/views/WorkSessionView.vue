@@ -13,6 +13,7 @@ import FilePreview from '@/components/FilePreview.vue'
 import ChatPanel from '@/components/ChatPanel.vue'
 import ConversationHistory from '@/components/ConversationHistory.vue'
 import ModeSelector from '@/components/ModeSelector.vue'
+import CollabInboxButton from '@/components/CollabInboxButton.vue'
 import { ArrowLeft, PanelLeftClose, PanelLeft, ChevronDown, ChevronUp } from 'lucide-vue-next'
 
 const route = useRoute()
@@ -149,6 +150,7 @@ watch(() => route.params.id, async (newId, oldId) => {
             <template v-if="sessionStore.messages.length"> · {{ sessionStore.messages.length }} 条消息</template>
           </p>
         </div>
+        <CollabInboxButton />
       </div>
     </header>
 
@@ -211,7 +213,7 @@ watch(() => route.params.id, async (newId, oldId) => {
              @deleted="onSessionDeleted" @renamed="onSessionRenamed" />
           </div>
           <div class="flex-1 min-w-0">
-            <ChatPanel :session-id="sessionId" :skill-name="skillName" :mode-name="sessionStore.currentSession?.mode_name" @done="workspaceStore.refresh(sessionId)" />
+            <ChatPanel :key="sessionId" :session-id="sessionId" :skill-name="skillName" :mode-name="sessionStore.currentSession?.mode_name" @done="workspaceStore.refresh(sessionId)" />
           </div>
         </div>
       </div>

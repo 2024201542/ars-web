@@ -6,10 +6,25 @@ import pathlib
 # 项目根目录 (ars-web/)
 PROJECT_ROOT = pathlib.Path(__file__).parent.parent.resolve()
 
+
+def _default_skills_path() -> pathlib.Path:
+    """解析 ARS 技能目录：支持 monorepo 与旁挂两种布局。"""
+    env = os.environ.get("ARS_SKILLS_PATH")
+    if env:
+        return pathlib.Path(env)
+
+    # 布局 A：ars-web 嵌在技能仓库内（如 academic-research-skills-main/ars-web）
+    monorepo = PROJECT_ROOT.parent
+    if (monorepo / "deep-research" / "SKILL.md").exists():
+        return monorepo
+
+    # 布局 B：技能仓库与 ars-web 并列（文档默认）
+    sibling = PROJECT_ROOT.parent / "academic-research-skills"
+    return sibling
+
+
 # ARS 技能套件路径
-ARS_SKILLS_PATH = pathlib.Path(
-    os.environ.get("ARS_SKILLS_PATH", str(PROJECT_ROOT.parent / "academic-research-skills"))
-)
+ARS_SKILLS_PATH = _default_skills_path()
 
 # SQLite 数据库路径
 DB_PATH = pathlib.Path(

@@ -1,12 +1,15 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { useSettingsStore } from '@/stores/settings'
 import { toast } from '@/composables/useToast'
 import { LogIn } from 'lucide-vue-next'
 
 const router = useRouter()
+const route = useRoute()
 const auth = useAuthStore()
+const settings = useSettingsStore()
 
 const username = ref('')
 const password = ref('')
@@ -20,7 +23,10 @@ async function handleSubmit() {
   submitting.value = true
   try {
     await auth.login(username.value.trim(), password.value.trim())
-    router.push('/')
+    // App.vue 只在首次挂载时 load；登录后需补拉设置，否则首页欢迎区转圈不消失
+    void settings.load()
+    const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : ''
+    router.push(redirect && redirect.startsWith('/') ? redirect : '/')
   } catch (e: any) {
     toast.error(e.message || String(e) || '登录失败')
   } finally {
@@ -56,8 +62,11 @@ async function handleSubmit() {
 
       <p class="text-center mt-4 text-xs font-ui text-ruc-text-light">
         请联系管理员获取账号
-      <div class="card mt-3 text-center animate-fade-in"><p class="text-xs font-ui text-ruc-text-dim mb-2">📖 首次使用？</p><p class="text-xs font-ui text-ruc-text-light">1️⃣ 管理员创建账号 2️⃣ 登录后配置 API Key 3️⃣ 选择技能开始研究</p></div>
       </p>
+      <div class="card mt-3 text-center animate-fade-in">
+        <p class="text-xs font-ui text-ruc-text-dim mb-2">首次使用？</p>
+        <p class="text-xs font-ui text-ruc-text-light">1. 管理员创建账号 2. 登录后配置 API Key 3. 选择技能开始研究</p>
+      </div>
     </div>
   </div>
 </template>

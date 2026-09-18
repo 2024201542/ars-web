@@ -45,7 +45,14 @@ async function requestWithRetry<T>(
         try {
           const err = await res.json()
           if (typeof err.detail === 'string') msg = err.detail
-          else if (Array.isArray(err.detail) && err.detail[0]?.msg) msg = err.detail[0].msg
+          else if (Array.isArray(err.detail) && err.detail.length) {
+            const d = err.detail[0]
+            msg = d.msg || d.message || (d.loc ? `${d.loc.join('.')}: 参数无效` : msg)
+            // 常见：body 缺失时提示更可读
+            if (/field required/i.test(msg) || d.type === 'missing') {
+              msg = '请求数据不完整，请检查用户名和密码是否已填写'
+            }
+          }
         } catch (e) { console.error("API error:", url, e) }
         
         // 5xx 错误才重试
@@ -138,6 +145,100 @@ export const api = {
       return body
     })
   },
+
+  // Collab (异步交接)
+  createCollabInvite: (sessionId: string, expires_days = 7) =>
+    request<{ id: string; token: string; url_path: string; expires_at: string; title: string; root_session_id: string }>(
+      `/sessions/${sessionId}/collab/invite`,
+      { method: 'POST', body: JSON.stringify({ expires_days }) },
+    ),
+  previewCollabInvite: (token: string) => request<any>(`/collab/invites/${encodeURIComponent(token)}`),
+  acceptCollabInvite: (token: string) =>
+    request<{ handoff_id: string; session_id: string; skill_name?: string; already: boolean; status?: string; message?: string }>(
+      `/collab/invites/${encodeURIComponent(token)}/accept`,
+      { method: 'POST', body: JSON.stringify({}) },
+    ),
+  submitCollabReview: (sessionId: string, note = '') =>
+    request<{ ok: boolean; handoff_id: string; message: string }>(
+      `/sessions/${sessionId}/collab/submit`,
+      { method: 'POST', body: JSON.stringify({ note }) },
+    ),
+  mergeCollabHandoff: (handoffId: string, mode: 'append_theirs' | 'keep_ours_only' | 'full_fork' = 'append_theirs') =>
+    request<{ ok: boolean; root_session_id: string; skill_name?: string; message: string; mode?: string; three_way?: any }>(
+      `/collab/handoffs/${handoffId}/merge`,
+      { method: 'POST', body: JSON.stringify({ mode }) },
+    ),
+  rejectCollabHandoff: (handoffId: string, note = '') =>
+    request<{ ok: boolean; message: string }>(
+      `/collab/handoffs/${handoffId}/reject`,
+      { method: 'POST', body: JSON.stringify({ note }) },
+    ),
+  revokeCollabInvite: (handoffId: string) =>
+    request<{ ok: boolean }>(`/collab/handoffs/${handoffId}/revoke`, { method: 'POST', body: JSON.stringify({}) }),
+  getCollabInbox: () =>
+    request<{
+      data: any[]
+      review_count: number
+      rejected_count: number
+      turn_count?: number
+      waiting_count?: number
+      submitted_count?: number
+      alert_count?: number
+    }>('/collab/inbox'),
+  getSessionCollab: (sessionId: string) => request<any>(`/sessions/${sessionId}/collab`),
+  previewCollabHandoff: (handoffId: string) =>
+    request<{
+      handoff_id: string
+      status: string
+      note: string
+      from_user: string
+      fork_title: string
+      diff_summary?: { same: number; added: number; removed: number; changed: number }
+      three_way?: {
+        root_diverged: boolean
+        has_conflict: boolean
+        ours_delta_count: number
+        theirs_delta_count: number
+        ours_delta: { role: string; content: string }[]
+        theirs_delta: { role: string; content: string }[]
+        hint: string
+      }
+      messages: {
+        role: string
+        author: string
+        content: string
+        created_at?: string
+        change?: 'same' | 'added' | 'removed' | 'changed'
+        lines?: { type: 'same' | 'add' | 'del'; text: string }[]
+      }[]
+    }>(`/collab/handoffs/${handoffId}/preview`),
+  requestCollabEdit: (handoffId: string, force = false) =>
+    request<{
+      ok: boolean
+      needs_confirm?: boolean
+      has_local_changes?: boolean
+      handoff_id: string
+      partner_name?: string
+      fork_session_id?: string
+      stashed?: boolean
+      message: string
+    }>(
+      `/collab/handoffs/${handoffId}/request-edit`,
+      { method: 'POST', body: JSON.stringify({ force }) },
+    ),
+  getCollabForkDiff: (sessionId: string) =>
+    request<{
+      handoff_id: string
+      status: string
+      can_submit: boolean
+      hint: string
+      vs_baseline: any[]
+      vs_baseline_summary: { same: number; added: number; removed: number; changed: number }
+      vs_root: any[]
+      vs_root_summary: { same: number; added: number; removed: number; changed: number }
+      three_way?: any
+    }>(`/sessions/${sessionId}/collab/diff-preview`),
+
   getExportUrl: (sessionId: string, fileId: string) =>
     withAuthToken(`${BASE_URL}/sessions/${sessionId}/exports/${fileId}`),
 

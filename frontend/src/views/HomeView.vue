@@ -12,6 +12,7 @@ import {
   Search, Edit3, ClipboardCheck, Rocket, Database,
   Settings, ChevronRight, Info, Shield,
 } from 'lucide-vue-next'
+import CollabInboxButton from '@/components/CollabInboxButton.vue'
 
 const router = useRouter()
 const auth = useAuthStore()
@@ -42,6 +43,7 @@ const currentProvider = computed(() => {
 })
 
 onMounted(async () => {
+  if (!settings.loaded) void settings.load()
   try {
     const sd = await api.getSkills()
     skills.value = sd.data
@@ -86,6 +88,7 @@ async function handleModeSelect(mode: Mode) {
             </div>
           </div>
           <div class="flex items-center gap-2">
+            <CollabInboxButton />
             <span class="text-xs font-ui text-ruc-text-light hidden sm:inline">{{ auth.user?.display_name || auth.user?.username }}</span>
             <button v-if="auth.user?.role === 'admin'" @click="router.push('/admin')" class="btn-secondary flex items-center gap-2 text-sm">
               <Shield class="w-4 h-4" />
@@ -135,6 +138,9 @@ async function handleModeSelect(mode: Mode) {
         </div>
 
         <!-- Skill Cards -->
+        <div v-else-if="!skills.length" class="text-center py-10 text-ruc-text-dim font-ui text-sm">
+          未检测到技能目录。请确认后端 <code class="text-ruc-red">ARS_SKILLS_PATH</code> 指向含 deep-research 等技能的仓库根目录。
+        </div>
         <div v-else class="grid grid-cols-1 md:grid-cols-2 gap-5 mb-12">
           <div
             v-for="skill in skills" :key="skill.name"
