@@ -1,4 +1,4 @@
-import type { Session, SessionDetail, Skill, Mode, Settings, ModelInfo, ProviderInfo, WorkspaceFile } from '@/types'
+import type { Session, SessionDetail, Skill, Mode, Settings, ModelInfo, ProviderInfo, WorkspaceFile, DebatePayload } from '@/types'
 
 // 开发环境用 localhost:8000，部署时用相对路径 /api（由 nginx 反向代理）
 const BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api'
@@ -112,17 +112,34 @@ export const api = {
   deleteSession: (id: string) => request<void>(`/sessions/${id}`, { method: 'DELETE' }),
   updateSession: (id: string, title: string) =>
     request<Session>(`/sessions/${id}`, { method: 'PATCH', body: JSON.stringify({ title }) }),
+  updateSessionEntry: (id: string, skill: string, mode: string) =>
+    request<Session>(`/sessions/${id}`, { method: 'PATCH', body: JSON.stringify({ skill_name: skill, mode_name: mode }) }),
 
   // Chat (SSE)
-  chatSSE: (sessionId: string, message: string, model?: string) => {
+  chatSSE: (sessionId: string, message: string, model?: string, openPath?: string, pipelineAction?: string, debateModels?: string[], debate?: DebatePayload) => {
     const authHeaders = getAuthHeaders()
+    const seats = debate?.seats || []
     return fetch(`${BASE_URL}/sessions/${sessionId}/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders },
-      body: JSON.stringify({ message, model }),
+      body: JSON.stringify({
+        message,
+        model,
+        open_path: openPath || undefined,
+        pipeline_action: pipelineAction || undefined,
+        debate_models: seats.length ? seats.map((item) => item.model) : (debateModels && debateModels.length ? debateModels : undefined),
+        debate_seats: seats.length ? seats : undefined,
+        debate_action: debate?.action || undefined,
+        summarize_model: debate?.summarize_model || undefined,
+        summarize_scope: debate?.summarize_scope || undefined,
+        summarize_pair: debate?.summarize_pair && debate.summarize_pair.length ? debate.summarize_pair : undefined,
+        summarize_rounds: debate?.summarize_rounds && debate.summarize_rounds.length ? debate.summarize_rounds : undefined,
+      }),
     })
   },
   stopChat: (sessionId: string) => request<{ ok: boolean }>(`/sessions/${sessionId}/chat/stop`, { method: 'POST' }),
+  debateHint: (sessionId: string, text: string) =>
+    request<{ ok: boolean }>(`/sessions/${sessionId}/debate-hint`, { method: 'POST', body: JSON.stringify({ text }) }),
 
   // Export
   exportResult: (sessionId: string, format: string, scope = 'conversation') =>
@@ -252,26 +269,61 @@ export const api = {
   getProviders: () => request<{ data: ProviderInfo[] }>('/settings/providers'),
 
   // Workspace — Files (session-scoped)
+  undoEdits: (backupId: string) =>
+    request<{ ok: boolean; files: { path: string; action: string }[] }>(`/workspace/edits/${encodeURIComponent(backupId)}/undo`, { method: 'POST' }),
   listWorkspaceFiles: (sessionId: string) =>
-    request<{ data: WorkspaceFile[] }>(`/workspace/files?session_id=${encodeURIComponent(sessionId)}`),
-  uploadFile: (sessionId: string, file: File) => {
+    request<{ data: WorkspaceFile[]; root?: { source: 'site' | 'local'; label: string; path: string; truncated?: boolean } }>(`/workspace/files?session_id=${encodeURIComponent(sessionId)}`),
+  uploadFile: (sessionId: string, file: File, relativePath?: string, source?: string) => {
     const fd = new FormData()
     fd.append('file', file)
+    if (relativePath) fd.append('relative_path', relativePath)
     const authHeaders = getAuthHeaders()
-    return fetch(`${BASE_URL}/workspace/files?session_id=${encodeURIComponent(sessionId)}`, {
+    const sourceQuery = source && source !== 'site' ? `&source=${encodeURIComponent(source)}` : ''
+    return fetch(`${BASE_URL}/workspace/files?session_id=${encodeURIComponent(sessionId)}${sourceQuery}`, {
       method: 'POST',
       headers: authHeaders,
       body: fd,
     }).then(r => r.ok ? r.json() as Promise<WorkspaceFile> : r.json().then(e => { throw new Error(e.detail) }))
   },
-  getFileContent: (sessionId: string, path: string) =>
-    request<{ content: string; path: string }>(`/workspace/files/content?session_id=${encodeURIComponent(sessionId)}&path=${encodeURIComponent(path)}`),
-  getFileDownloadUrl: (sessionId: string, path: string) =>
-    withAuthToken(`${BASE_URL}/workspace/files/download?session_id=${encodeURIComponent(sessionId)}&path=${encodeURIComponent(path)}`),
-  getFilePreviewUrl: (sessionId: string, path: string) =>
-    withAuthToken(`${BASE_URL}/workspace/files/preview?session_id=${encodeURIComponent(sessionId)}&path=${encodeURIComponent(path)}`),
-  deleteWorkspaceFile: (sessionId: string, path: string) =>
-    request<void>(`/workspace/files?session_id=${encodeURIComponent(sessionId)}&path=${encodeURIComponent(path)}`, { method: 'DELETE' }),
+  getFileContent: (sessionId: string, path: string, source?: string) =>
+    request<{ content: string; path: string }>(`/workspace/files/content?session_id=${encodeURIComponent(sessionId)}&path=${encodeURIComponent(path)}${source && source !== 'site' ? `&source=${encodeURIComponent(source)}` : ''}`),
+  saveFileContent: (sessionId: string, path: string, content: string, source?: string) =>
+    request<WorkspaceFile>(`/workspace/files/content?session_id=${encodeURIComponent(sessionId)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ path, content, source: source || 'site' }),
+    }),
+  getFileDownloadUrl: (sessionId: string, path: string, source?: string) =>
+    withAuthToken(`${BASE_URL}/workspace/files/download?session_id=${encodeURIComponent(sessionId)}&path=${encodeURIComponent(path)}${source && source !== 'site' ? `&source=${encodeURIComponent(source)}` : ''}`),
+  getFilePreviewUrl: (sessionId: string, path: string, source?: string) =>
+    withAuthToken(`${BASE_URL}/workspace/files/preview?session_id=${encodeURIComponent(sessionId)}&path=${encodeURIComponent(path)}${source && source !== 'site' ? `&source=${encodeURIComponent(source)}` : ''}`),
+  deleteWorkspaceFile: (sessionId: string, path: string, source?: string) =>
+    request<void>(`/workspace/files?session_id=${encodeURIComponent(sessionId)}&path=${encodeURIComponent(path)}${source && source !== 'site' ? `&source=${encodeURIComponent(source)}` : ''}`, { method: 'DELETE' }),
   refreshWorkspace: (sessionId: string) =>
-    request<{ data: WorkspaceFile[] }>(`/workspace/refresh?session_id=${encodeURIComponent(sessionId)}`, { method: 'POST' }),
+    request<{ data: WorkspaceFile[]; root?: { source: 'site' | 'local'; label: string; path: string; truncated?: boolean } }>(`/workspace/refresh?session_id=${encodeURIComponent(sessionId)}`, { method: 'POST' }),
+  openLocalFolder: async (sessionId: string, path = '') => {
+    const res = await fetch(`${BASE_URL}/workspace/folder?session_id=${encodeURIComponent(sessionId)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+      body: JSON.stringify({ path }),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) throw new Error(data.detail || '打开文件夹失败')
+    return data as { cancelled?: boolean; source?: string; label?: string; path?: string }
+  },
+  closeLocalFolder: (sessionId: string) =>
+    request<{ data: WorkspaceFile[]; root?: { source: 'site' | 'local'; label: string; path: string; truncated?: boolean } }>(`/workspace/folder?session_id=${encodeURIComponent(sessionId)}`, { method: 'DELETE' }),
+  createWorkspaceFile: (sessionId: string, body: { kind: string; directory?: string; name?: string; source?: string }) =>
+    request<WorkspaceFile>(`/workspace/files/create?session_id=${encodeURIComponent(sessionId)}`, { method: 'POST', body: JSON.stringify(body) }),
+  createWorkspaceDir: (sessionId: string, body: { name: string; directory?: string; source?: string }) =>
+    request<WorkspaceFile>(`/workspace/dirs?session_id=${encodeURIComponent(sessionId)}`, { method: 'POST', body: JSON.stringify(body) }),
+  renameWorkspaceFile: (sessionId: string, body: { path: string; name: string; source?: string }) =>
+    request<WorkspaceFile>(`/workspace/files/rename?session_id=${encodeURIComponent(sessionId)}`, { method: 'POST', body: JSON.stringify(body) }),
+  generateWorkspaceDoc: (
+    sessionId: string,
+    body: { format: 'markdown' | 'docx'; filename?: string; message_ids?: number[]; template_path?: string },
+  ) =>
+    request<WorkspaceFile & { format: string; source: string }>(
+      `/workspace/generate-doc?session_id=${encodeURIComponent(sessionId)}`,
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
 }

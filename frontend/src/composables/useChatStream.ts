@@ -1,6 +1,7 @@
 /** SSE 流式消息处理 */
 import { ref, computed } from 'vue'
 import { api } from '@/api'
+import type { DebatePayload, DebateVoice } from '@/types'
 import { useSessionStore } from '@/stores/session'
 import { toast } from '@/composables/useToast'
 
@@ -14,16 +15,10 @@ export function useChatStream(getSessionId: () => string, emitDone: () => void) 
   const lastToolUse = ref('')
 
   const statusText = computed(() => {
-    if (progressPhase.value === 'init') return '正在启动引擎…'
-    if (lastToolUse.value) return `正在执行：${lastToolUse.value}`
-    const t = progressTokens.value
-    if (t < 50) return '正在阅读研究资料…'
-    if (t < 200) return '正在分析核心问题…'
-    if (t < 600) return '正在检索相关文献…'
-    if (t < 1200) return '正在深度分析…'
-    if (t < 2500) return '正在综合多方信息…'
-    if (t < 5000) return '正在组织回答…'
-    return `正在整理内容 (${(t/1000).toFixed(1)}k tokens)…`
+    if (lastToolUse.value) return `正在使用工具：${lastToolUse.value}`
+    if (progressTokens.value > 0) return '正在写回答…'
+    if (progressPhase.value === 'init') return '正在启动…'
+    return '正在连接模型…'
   })
 
   function _parseLine(line: string, p: { evt: string; dat: string }, f: (d: any) => void) {
@@ -40,7 +35,7 @@ export function useChatStream(getSessionId: () => string, emitDone: () => void) 
     return l && l.role === 'assistant' ? l : null
   }
 
-  async function sendMessage(msg: string, modelToUse?: string) {
+  async function sendMessage(msg: string, modelToUse?: string, openPath?: string, pipelineAction?: string, debateModels?: string[], debate?: DebatePayload) {
     if (isStreaming.value) return
     isStreaming.value = true; resultContent.value = ''
     progressTokens.value = 0; progressPhase.value = ''; lastToolUse.value = ''
@@ -61,7 +56,7 @@ export function useChatStream(getSessionId: () => string, emitDone: () => void) 
 
     let last = Date.now()
     try {
-      const r = await api.chatSSE(getSessionId(), msg, modelToUse)
+      const r = await api.chatSSE(getSessionId(), msg, modelToUse, openPath, pipelineAction, debateModels, debate)
       if (!r.ok) { const e = await r.json().catch(()=>({detail:`${r.status}`})); throw new Error(e.detail||'请求失败') }
       if (!r.body) throw new Error('无响应流')
       const rd = r.body.getReader(); const dc = new TextDecoder()
@@ -74,19 +69,44 @@ export function useChatStream(getSessionId: () => string, emitDone: () => void) 
         }
         else if (pen.evt === 'progress') { progressTokens.value = d.tokens||0; progressPhase.value = d.phase||'' }
         else if (pen.evt === 'phase_start' && d.phase === 'tool') { lastToolUse.value = d.description||'' }
+        else if (pen.evt === 'files_changed' && l) { l.edits = d }
+        else if (pen.evt === 'pipeline' && l) { l.pipeline = d }
+        else if (pen.evt === 'debate_topic' && l) { l.debatePlan = d }
+        else if (pen.evt === 'debate_pause' && l) { l.debateHold = d }
+        else if (pen.evt === 'debate_voice' && l) {
+          l.debateHold = null
+          const voices: DebateVoice[] = [...(l.debate?.voices || [])]
+          const incoming = d as DebateVoice
+          if (incoming.kind === 'summary' || incoming.kind === 'judge') voices.push(incoming)
+          else {
+            const idx = voices.findIndex((item) => item.model === incoming.model && item.round === incoming.round && item.kind !== 'summary' && item.kind !== 'judge')
+            if (idx >= 0) voices[idx] = incoming
+            else voices.push(incoming)
+          }
+          l.debate = { voices }
+        }
         else if (pen.evt === 'done') {
-          if (l) { l._streaming = false; l.content = l._rawContent || l.content }
+          if (l) { l._streaming = false; l.debateHold = null; l.content = l._rawContent || l.content }
           emitDone()
         }
         else if (pen.evt === 'error') {
-          const errText = d?.message || d?.code || '未知错误'
-          resultContent.value += `\n\n> **⚠️ ${errText}**\n`
-          if (l) { l._streaming = false; l.content = resultContent.value }
+          const raw = d?.message || d?.code || '未知错误'
+          const errText = /401|403|invalid api key|authentication/i.test(raw)
+            ? 'DeepSeek 拒绝了当前密钥，所以回答停在这里。请点左下角的模型名，到设置里重新保存 API Key，然后再发一次。'
+            : /UnicodeDecodeError|codec can't decode/i.test(raw)
+              ? '模型已经回复，但读取时编码出错，内容没有显示出来。请再发一次。'
+              : raw
+          resultContent.value = resultContent.value.trim() ? `${resultContent.value}\n\n${errText}` : errText
+          if (l) {
+            l._streaming = false
+            l.content = errText
+            if (l.pipeline) l.pipeline = { ...l.pipeline, awaiting: false }
+          }
         }
       }
       try { while (true) { const { done, value } = await rd.read()
         if (done) { buf+=dc.decode(); buf.split('\n').forEach((l: string)=>_parseLine(l,pen,fl)); if (pen.evt) { try { fl(JSON.parse(pen.dat||'{}')) } catch {} } break }
-        buf+=dc.decode(value,{stream:true}); const ls=buf.split('\n'); buf=ls.pop()||''; ls.forEach((l: string)=>_parseLine(l,pen,fl))
+        buf+=dc.decode(value,{stream:true}); const ls=buf.split('\n'); buf=ls.pop()||''; ls.forEach((l: string)=>{ if (l.trim()===': heartbeat') last=Date.now(); _parseLine(l,pen,fl) })
         if (Date.now()-last>30000){toast.warning('连接可能已中断…'); last=Date.now()} }
       } finally { try { rd.releaseLock() } catch {} }
     } catch (e: any) {

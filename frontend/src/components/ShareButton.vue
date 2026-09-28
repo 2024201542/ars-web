@@ -4,7 +4,10 @@ import { api } from '@/api'
 import { toast } from '@/composables/useToast'
 import { Link2, Loader2, Copy, Check, Ban } from 'lucide-vue-next'
 
-const props = defineProps<{ sessionId: string; disabled?: boolean }>()
+const props = withDefaults(defineProps<{ sessionId: string; disabled?: boolean; placement?: 'up' | 'down'; compact?: boolean }>(), {
+  placement: 'up',
+  compact: false,
+})
 
 const open = ref(false)
 const creating = ref(false)
@@ -115,7 +118,10 @@ function selectLink(e: Event) {
 <template>
   <div ref="rootRef" class="relative">
     <button
-      class="btn-secondary text-sm flex items-center gap-2"
+      class="flex items-center gap-2"
+      :class="compact
+        ? 'w-full px-2 py-1.5 rounded-lg text-xs font-ui text-ruc-text hover:bg-ruc-warm text-left'
+        : 'btn-secondary text-sm'"
       :disabled="disabled || creating"
       @click="open = !open"
       title="生成只读分享链接"
@@ -125,7 +131,11 @@ function selectLink(e: Event) {
       分享
     </button>
 
-    <div v-if="open" class="absolute bottom-full right-0 mb-2 w-80 bg-white border border-ruc-divider rounded-xl shadow-modal z-40 p-3">
+    <div
+      v-if="open"
+      class="absolute right-0 w-80 bg-white border border-ruc-divider rounded-xl shadow-modal z-40 p-3"
+      :class="placement === 'down' ? 'top-full mt-2' : 'bottom-full mb-2'"
+    >
       <p class="text-sm font-ui text-ruc-text font-medium mb-1">只读分享链接</p>
       <p class="text-[11px] font-ui text-ruc-text-light mb-3">任何人打开链接可查看当前对话快照，不能继续提问。可随时撤销。</p>
 

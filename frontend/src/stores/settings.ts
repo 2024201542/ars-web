@@ -33,7 +33,12 @@ export const useSettingsStore = defineStore('settings', () => {
       providers.value = (providerData.data || []).map(p => {
         const sp = settingsMap[p.id]
         if (!sp) return p
-        return { ...p, key_configured: sp.key_configured, base_url: sp.base_url || p.base_url }
+        return {
+          ...p,
+          key_configured: sp.key_configured,
+          key_unreadable: sp.key_unreadable,
+          base_url: sp.base_url || p.base_url,
+        }
       })
 
       if (settings.model) selectedModel.value = settings.model

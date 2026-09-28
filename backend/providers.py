@@ -41,6 +41,8 @@ PROVIDERS: dict[str, dict] = {
         "display_name": "DeepSeek",
         "protocol": PROTOCOL_OPENAI,
         "default_base_url": "https://api.deepseek.com",
+        # Claude Code 改文件要走工具调用。本机转接层只转发文字，所以 Agent 直连这个地址。
+        "tool_base_url": "https://api.deepseek.com/anthropic",
         "key_setting": "deepseek_api_key",
         "base_url_setting": "deepseek_base_url",
     },

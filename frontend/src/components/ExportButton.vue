@@ -4,7 +4,10 @@ import { toast } from '@/composables/useToast'
 import { api } from '@/api'
 import { Download, Loader2, FileText, FileType, FileBox } from 'lucide-vue-next'
 
-const props = defineProps<{ sessionId: string; disabled?: boolean }>()
+const props = withDefaults(defineProps<{ sessionId: string; disabled?: boolean; placement?: 'up' | 'down'; compact?: boolean }>(), {
+  placement: 'up',
+  compact: false,
+})
 
 const exporting = ref(false)
 const showMenu = ref(false)
@@ -51,7 +54,10 @@ async function handleExport(format: string) {
   <div ref="rootRef" class="relative">
     <button
       @click="showMenu = !showMenu"
-      class="btn-secondary text-sm flex items-center gap-2"
+      class="flex items-center gap-2"
+      :class="compact
+        ? 'w-full px-2 py-1.5 rounded-lg text-xs font-ui text-ruc-text hover:bg-ruc-warm text-left'
+        : 'btn-secondary text-sm'"
       :disabled="exporting || disabled"
       title="导出当前会话"
     >
@@ -62,7 +68,8 @@ async function handleExport(format: string) {
 
     <div
       v-if="showMenu"
-      class="absolute bottom-full right-0 mb-2 bg-ruc-card border border-ruc-divider rounded-lg py-1 w-64 shadow-modal z-30"
+      class="absolute right-0 bg-ruc-card border border-ruc-divider rounded-lg py-1 w-64 shadow-modal z-30"
+      :class="placement === 'down' ? 'top-full mt-2' : 'bottom-full mb-2'"
     >
       <div class="px-3 py-2 text-[11px] font-ui text-ruc-text-light border-b border-ruc-divider">导出完整问答（含提问与回答）</div>
       <button

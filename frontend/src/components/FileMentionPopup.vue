@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, watch, computed } from 'vue'
 import { api } from '@/api'
-import { FileText, FileCode, Table2, Image, File, Loader2 } from 'lucide-vue-next'
+import { FileText, FileCode, Table2, Image, File, Folder, Loader2 } from 'lucide-vue-next'
 
 const props = defineProps<{
   sessionId: string
@@ -72,12 +72,13 @@ defineExpose({ handleKeydown })
       class="flex items-center gap-3 px-3 py-2.5 cursor-pointer transition-colors"
       :class="i === selectedIdx ? 'bg-ruc-red-pale' : 'hover:bg-ruc-warm'"
     >
-      <component :is="fileIcon(f.ext)" class="w-4 h-4 flex-shrink-0" :class="i === selectedIdx ? 'text-ruc-red' : 'text-ruc-text-dim'" />
+      <Folder v-if="f.is_dir" class="w-4 h-4 flex-shrink-0 text-ruc-gold" />
+      <component v-else :is="fileIcon(f.ext)" class="w-4 h-4 flex-shrink-0" :class="i === selectedIdx ? 'text-ruc-red' : 'text-ruc-text-dim'" />
       <div class="flex-1 min-w-0">
         <p class="text-sm font-ui text-ruc-text truncate">{{ f.name }}</p>
-        <p class="text-[10px] font-ui text-ruc-text-light">{{ f.dir || '根目录' }} · {{ fmtSize(f.size_bytes) }}</p>
+        <p class="text-[10px] font-ui text-ruc-text-light">{{ f.is_dir ? '文件夹' : ((f.dir || '根目录') + ' · ' + fmtSize(f.size_bytes)) }}</p>
       </div>
-      <span class="text-[10px] font-ui text-ruc-text-light flex-shrink-0">{{ f.ext.replace('.', '').toUpperCase() }}</span>
+      <span v-if="!f.is_dir" class="text-[10px] font-ui text-ruc-text-light flex-shrink-0">{{ f.ext.replace('.', '').toUpperCase() }}</span>
     </div>
     <div v-if="!loading && files.length === 0 && query" class="px-3 py-6 text-center">
       <p class="text-xs font-ui text-ruc-text-light">未找到匹配 "{{ query }}" 的文件</p>

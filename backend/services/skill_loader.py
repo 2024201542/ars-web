@@ -109,14 +109,6 @@ class SkillLoader:
         ],
         "academic-paper": [
             {
-                "name": "full",
-                "display_name": "完整撰写",
-                "description": "12 代理论文撰写管线，从零撰写完整学术论文（IMRaD结构），支持中英双语摘要",
-                "phases": ["配置访谈", "文献策略", "大纲设计", "论证构建", "全文草稿", "引用合规", "双语摘要", "格式输出"],
-                "estimated_time": "30-60分钟",
-                "paper_types": ["original_research", "literature_review", "case_study", "methodology", "theoretical", "position_paper"],
-            },
-            {
                 "name": "plan",
                 "display_name": "写作规划",
                 "description": "制定完整的论文写作计划和策略",
@@ -129,6 +121,14 @@ class SkillLoader:
                 "description": "为论文设计和优化大纲结构（IMRaD格式）",
                 "phases": ["配置访谈", "大纲设计"],
                 "estimated_time": "5-10分钟",
+                "paper_types": ["original_research", "literature_review", "case_study", "methodology", "theoretical", "position_paper"],
+            },
+            {
+                "name": "full",
+                "display_name": "完整撰写",
+                "description": "按已有的大纲、笔记和材料写成一版完整论文",
+                "phases": ["读取已有材料", "论证构建", "全文草稿", "引用合规", "双语摘要", "格式输出"],
+                "estimated_time": "30-60分钟",
                 "paper_types": ["original_research", "literature_review", "case_study", "methodology", "theoretical", "position_paper"],
             },
             {
@@ -158,6 +158,13 @@ class SkillLoader:
                 "description": "专为文献综述论文设计的撰写流程",
                 "phases": ["领域界定", "文献检索策略", "综合分析", "综述撰写"],
                 "estimated_time": "20-40分钟",
+            },
+            {
+                "name": "lit-search",
+                "display_name": "查文献",
+                "description": "知网和 CSSCI 检索接口先留在这里，尚未接通，不会编造文献",
+                "phases": ["检索请求"],
+                "estimated_time": "接口未接通",
             },
             {
                 "name": "format-convert",
@@ -228,11 +235,43 @@ class SkillLoader:
         "academic-pipeline": [
             {
                 "name": "full",
-                "display_name": "全流程管线",
-                "description": "10 阶段全流程学术管线：研究→撰写→完整性验证→审稿→修订→再审→终审→最终确认→定稿→流程总结。包含强制完整性验证和双阶段审稿",
-                "phases": ["Stage1研究", "Stage2撰写", "Stage2.5完整性验证", "Stage3审稿", "Stage4修订", "Stage3'再审", "Stage4'再修订", "Stage4.5终审", "Stage5定稿", "Stage6流程总结"],
+                "display_name": "从头到定稿",
+                "description": "先列出步骤，点开始才写。研究简报、文献综述、写作规划、大纲、完整撰写、快速评审、论文修改、摘要、引用检查、声明，最后综合成终稿。",
+                "phases": ["研究简报", "文献综述", "写作规划", "大纲", "完整撰写", "快速评审", "论文修改", "摘要", "引用检查", "声明", "终稿"],
                 "estimated_time": "60-120分钟",
                 "paper_types": ["original_research", "literature_review", "case_study", "methodology", "theoretical", "position_paper"],
+            },
+        ],
+        "literature-find": [
+            {
+                "name": "search",
+                "display_name": "开放检索",
+                "description": "向 OpenAlex 要真实记录。关键词检索受限时先用 Crossref 定位 DOI。知网接口仍留着，尚未接通，不会编造文献。",
+                "phases": ["检索"],
+                "estimated_time": "一次检索",
+            },
+        ],
+        "idea-debate": [
+            {
+                "name": "socratic",
+                "display_name": "苏格拉底式提问",
+                "description": "选一个模型，用提问把想法问紧",
+                "phases": ["提问"],
+                "estimated_time": "按所选模型",
+            },
+            {
+                "name": "contrast",
+                "display_name": "多模型辩论",
+                "description": "给每个模型一个看法，一次一位发言；同一个接口里的不同模型也可以",
+                "phases": ["第一轮", "回应"],
+                "estimated_time": "按所选模型",
+            },
+            {
+                "name": "custom",
+                "display_name": "自己定问法",
+                "description": "问法由用户写，选中的模型按这个角度深入",
+                "phases": ["第一轮", "回应"],
+                "estimated_time": "按所选模型",
             },
         ],
         "kimi-cnki-search": [

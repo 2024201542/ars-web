@@ -1,173 +1,233 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
-import { useAuthStore } from '@/stores/auth'
 import { useSettingsStore } from '@/stores/settings'
+import { usePendingStartStore } from '@/stores/pendingStart'
 import { useToast } from '@/composables/useToast'
 import { api } from '@/api'
-import { SKILL_LABELS, SKILL_ROUTES, SKILL_DESCRIPTIONS } from '@/utils/constants'
-import ModeSelector from '@/components/ModeSelector.vue'
-import type { Skill, Mode } from '@/types'
+import { SKILL_ROUTES } from '@/utils/constants'
 import {
-  Search, Edit3, ClipboardCheck, Rocket, Database,
-  Settings, ChevronRight, Info, Shield,
-} from 'lucide-vue-next'
-import CollabInboxButton from '@/components/CollabInboxButton.vue'
+  START_OPTIONS, DEFAULT_START_ID, QUICK_STARTS, SUGGESTIONS,
+  findStart, startTitle, type StartOption,
+} from '@/utils/startOptions'
+import AppSidebar from '@/components/AppSidebar.vue'
+import { ChevronDown, ArrowUp, Paperclip, X, Loader2 } from 'lucide-vue-next'
 
 const router = useRouter()
-const auth = useAuthStore()
 const settings = useSettingsStore()
+const pending = usePendingStartStore()
 const toast = useToast()
 
-const SKILL_ICONS: Record<string, any> = {
-  search: Search,
-  edit: Edit3,
-  clipboard: ClipboardCheck,
-  rocket: Rocket,
-  database: Database,
+const selectedId = ref(DEFAULT_START_ID)
+const menuOpen = ref(false)
+const draft = ref('')
+const files = ref<File[]>([])
+const sending = ref(false)
+const boxRef = ref<HTMLElement | null>(null)
+const textareaRef = ref<HTMLTextAreaElement | null>(null)
+const fileRef = ref<HTMLInputElement | null>(null)
+
+const current = computed(() => findStart(selectedId.value))
+const workflows = computed(() => START_OPTIONS.filter((item) => item.group === '工作流'))
+const tools = computed(() => START_OPTIONS.filter((item) => item.group === '工具'))
+
+function pick(option: StartOption) {
+  selectedId.value = option.id
+  menuOpen.value = false
+  textareaRef.value?.focus()
 }
 
-const skills = ref<Skill[]>([])
-const loading = ref(true)
-const showModeSelector = ref(false)
-const selectedSkill = ref<Skill | null>(null)
+function onPickFiles(event: Event) {
+  const input = event.target as HTMLInputElement
+  const list = Array.from(input.files || [])
+  for (const file of list) {
+    if (!files.value.some((item) => item.name === file.name && item.size === file.size)) files.value.push(file)
+  }
+  input.value = ''
+}
 
-const currentModel = computed(() => {
-  const m = settings.models.find(x => x.id === settings.selectedModel)
-  return m?.name || '未选择'
-})
-const currentProvider = computed(() => {
-  const m = settings.models.find(x => x.id === settings.selectedModel)
-  const p = settings.providers.find(x => x.id === m?.provider)
-  return p?.display_name || ''
-})
+function removeFile(index: number) {
+  files.value.splice(index, 1)
+}
 
-onMounted(async () => {
+async function start(text?: string, optionId?: string) {
+  if (sending.value) return
+  if (optionId) selectedId.value = optionId
+  const message = (text ?? draft.value).trim()
+  if (!message && !files.value.length) {
+    textareaRef.value?.focus()
+    return
+  }
+  if (!settings.isConfigured) {
+    toast.info('请先配置 API Key')
+    router.push('/settings')
+    return
+  }
+  const option = findStart(selectedId.value)
+  sending.value = true
+  try {
+    const title = (message || files.value[0]?.name || '新会话').replace(/\s+/g, ' ').slice(0, 40)
+    const session = await api.createSession(option.skill, option.mode, title)
+    pending.set(session.id, message, files.value.slice())
+    files.value = []
+    draft.value = ''
+    const routeName = SKILL_ROUTES[option.skill] || 'research'
+    await router.push(`/session/${session.id}/${routeName}`)
+  } catch (err: any) {
+    toast.error('创建会话失败: ' + (err.message || ''))
+  } finally {
+    sending.value = false
+  }
+}
+
+function resetForNew() {
+  draft.value = ''
+  files.value = []
+  menuOpen.value = false
+  selectedId.value = DEFAULT_START_ID
+  nextTick(() => textareaRef.value?.focus())
+}
+
+function onKeydown(event: KeyboardEvent) {
+  if (event.key === 'Enter' && !event.shiftKey) {
+    event.preventDefault()
+    void start()
+  }
+}
+
+function onDocClick(event: MouseEvent) {
+  if (boxRef.value && !boxRef.value.contains(event.target as Node)) menuOpen.value = false
+}
+
+onMounted(() => {
   if (!settings.loaded) void settings.load()
-  try {
-    const sd = await api.getSkills()
-    skills.value = sd.data
-  } catch { toast.error('连接服务器失败') }
-  finally { loading.value = false }
+  document.addEventListener('click', onDocClick)
+  window.addEventListener('ars-new', resetForNew)
 })
-
-function handleSkillClick(skill: Skill) {
-  if (!settings.isConfigured) { router.push('/settings'); toast.info('请先配置 API Key'); return }
-  selectedSkill.value = skill; showModeSelector.value = true
-}
-async function handleModeSelect(mode: Mode) {
-  if (!selectedSkill.value) return
-  try {
-    const s = await api.createSession(selectedSkill.value.name, mode.name)
-    showModeSelector.value = false
-    router.push(`/session/${s.id}/${SKILL_ROUTES[selectedSkill.value.name] || 'research'}`)
-  } catch (e: any) { toast.error('创建会话失败: ' + (e.message || '')) }
-}
+onUnmounted(() => {
+  document.removeEventListener('click', onDocClick)
+  window.removeEventListener('ars-new', resetForNew)
+})
 </script>
 
 <template>
-  <div class="min-h-screen flex flex-col">
-    <!-- Header -->
-    <header class="border-b border-ruc-divider bg-white/80 backdrop-blur-md sticky top-0 z-30">
-      <div class="max-w-6xl mx-auto px-5 py-4 flex items-center justify-between">
-        <div class="flex items-center gap-3">
-          <div class="logo-mark">
-            <span class="logo-mark-text">A</span>
+  <div class="h-screen flex bg-ruc-bg">
+    <AppSidebar />
+    <main class="flex-1 min-w-0 overflow-y-auto flex flex-col items-center justify-center px-4 py-16 md:px-8">
+      <p class="text-sm font-ui text-ruc-text-dim mb-4">从一句话开始。方式已经选好，也可以再换。</p>
+
+      <div ref="boxRef" class="w-full max-w-2xl relative">
+        <div class="rounded-2xl bg-white border border-ruc-divider shadow-elevated overflow-hidden">
+          <button
+            class="w-full bg-ruc-red text-white px-4 py-2.5 flex items-center gap-2 text-left hover:bg-ruc-red-light transition-colors"
+            @click.stop="menuOpen = !menuOpen"
+          >
+            <span class="text-sm font-ui font-medium truncate">{{ startTitle(current) }}</span>
+            <span
+              v-if="current.trial"
+              class="text-[10px] font-ui px-1.5 py-0.5 rounded bg-ruc-gold text-white flex-shrink-0"
+            >试验</span>
+            <ChevronDown class="w-4 h-4 ml-auto flex-shrink-0 transition-transform" :class="menuOpen ? 'rotate-180' : ''" />
+          </button>
+
+          <div v-if="files.length" class="px-4 pt-3 flex flex-wrap gap-1.5">
+            <span
+              v-for="(file, index) in files"
+              :key="file.name + file.size"
+              class="inline-flex items-center gap-1 text-[11px] font-ui px-2 py-1 rounded-full bg-ruc-red-pale text-ruc-red"
+            >
+              {{ file.name }}
+              <button class="hover:text-ruc-red-dark" @click="removeFile(index)"><X class="w-3 h-3" /></button>
+            </span>
           </div>
-          <div>
-            <h1 class="text-ruc-red font-display text-xl font-semibold leading-none">ARS Web</h1>
-            <p class="text-ruc-text-light text-xs font-ui mt-0.5">学术研究助手</p>
+
+          <textarea
+            ref="textareaRef"
+            v-model="draft"
+            rows="3"
+            placeholder="说说你想写什么…"
+            class="w-full resize-none px-4 py-3 text-sm font-ui text-ruc-text placeholder:text-ruc-text-light focus:outline-none"
+            @keydown="onKeydown"
+          />
+
+          <div class="px-3 pb-3 flex items-center justify-between gap-2">
+            <button
+              class="inline-flex items-center gap-1.5 text-xs font-ui text-ruc-text-dim hover:text-ruc-red px-2 py-1.5 rounded-lg hover:bg-ruc-red-pale"
+              @click="fileRef?.click()"
+            >
+              <Paperclip class="w-3.5 h-3.5" /> 上传材料
+            </button>
+            <input ref="fileRef" type="file" class="hidden" multiple accept=".pdf,.doc,.docx,.txt,.md,.png,.jpg,.jpeg" @change="onPickFiles" />
+            <button
+              class="w-9 h-9 rounded-lg flex items-center justify-center text-white bg-ruc-red hover:bg-ruc-red-light disabled:opacity-40 disabled:cursor-not-allowed"
+              :disabled="sending || (!draft.trim() && !files.length)"
+              title="开始"
+              @click="start()"
+            >
+              <Loader2 v-if="sending" class="w-4 h-4 animate-spin" />
+              <ArrowUp v-else class="w-4 h-4" />
+            </button>
           </div>
         </div>
-        <div class="flex items-center gap-4">
-          <div v-if="settings.isConfigured" class="hidden md:flex items-center gap-2.5 px-3 py-2 rounded-xl bg-ruc-warm border border-ruc-divider">
-            <span class="dot-green" />
-            <div class="text-left leading-tight">
-              <p class="text-[11px] font-ui text-ruc-text-light">{{ currentProvider }}</p>
-              <p class="text-sm font-ui font-medium text-ruc-text">{{ currentModel }}</p>
-            </div>
-          </div>
-          <div class="flex items-center gap-2">
-            <CollabInboxButton />
-            <span class="text-xs font-ui text-ruc-text-light hidden sm:inline">{{ auth.user?.display_name || auth.user?.username }}</span>
-            <button v-if="auth.user?.role === 'admin'" @click="router.push('/admin')" class="btn-secondary flex items-center gap-2 text-sm">
-              <Shield class="w-4 h-4" />
-              管理
-            </button>
-            <button @click="router.push('/settings')" class="btn-secondary flex items-center gap-2 text-sm">
-              <Settings class="w-4 h-4" />
-              设置
-            </button>
-            <button @click="auth.logout(); router.push('/login')" class="btn-ghost text-sm text-ruc-text-dim">
-              退出
-            </button>
-          </div>
+
+        <div
+          v-if="menuOpen"
+          class="absolute left-0 right-0 top-11 z-30 bg-white border border-ruc-divider rounded-xl shadow-modal py-2 max-h-[60vh] overflow-y-auto"
+        >
+          <p class="px-3 pt-1 pb-1 text-[10px] font-ui tracking-wider text-ruc-text-light">工作流</p>
+          <button
+            v-for="option in workflows"
+            :key="option.id"
+            class="w-full px-3 py-2 text-left hover:bg-ruc-red-pale"
+            :class="option.id === selectedId ? 'bg-ruc-red-pale' : ''"
+            @click="pick(option)"
+          >
+            <span class="flex items-center gap-2 text-sm font-ui" :class="option.id === selectedId ? 'text-ruc-red' : 'text-ruc-text'">
+              {{ startTitle(option) }}
+              <span v-if="option.trial" class="text-[10px] px-1.5 py-0.5 rounded bg-ruc-warm text-ruc-gold border border-ruc-gold/30">试验</span>
+            </span>
+            <span class="block text-[11px] font-ui text-ruc-text-dim mt-0.5">{{ option.hint }}</span>
+          </button>
+          <p class="px-3 pt-2 pb-1 text-[10px] font-ui tracking-wider text-ruc-text-light">工具</p>
+          <button
+            v-for="option in tools"
+            :key="option.id"
+            class="w-full px-3 py-2 text-left hover:bg-ruc-red-pale"
+            :class="option.id === selectedId ? 'bg-ruc-red-pale' : ''"
+            @click="pick(option)"
+          >
+            <span class="block text-sm font-ui" :class="option.id === selectedId ? 'text-ruc-red' : 'text-ruc-text'">{{ startTitle(option) }}</span>
+            <span class="block text-[11px] font-ui text-ruc-text-dim mt-0.5">{{ option.hint }}</span>
+          </button>
         </div>
       </div>
-    </header>
 
-    <main class="flex-1 py-12 px-5">
-      <div class="max-w-4xl mx-auto">
-        <!-- Hero -->
-        <div class="text-center mb-12 animate-fade-in">
-          <h2 class="text-4xl font-display font-semibold text-ruc-text mb-3">欢迎使用 ARS Web</h2>
-          <p class="text-ruc-text-dim text-lg font-ui max-w-lg mx-auto">学术研究智能助手，助力您的科研工作</p>
-          <div v-if="!settings.loaded" class="mt-4 flex justify-center">
-            <div class="w-6 h-6 border-2 border-ruc-red/20 border-t-ruc-red rounded-full animate-spin" />
-          </div>
-          <div v-else-if="!settings.isConfigured" class="mt-4">
-            <button @click="router.push('/settings')" class="inline-flex items-center gap-1.5 text-ruc-red/80 hover:text-ruc-red text-sm font-ui transition-colors">
-              <Info class="w-4 h-4" />
-              请先配置 API Key 以开始使用 →
-            </button>
-          </div>
-        </div>
+      <div class="w-full max-w-2xl flex flex-wrap gap-2 mt-4">
+        <button
+          v-for="item in QUICK_STARTS"
+          :key="item.id"
+          class="px-3 py-1.5 rounded-full border text-xs font-ui transition-colors"
+          :class="item.id === selectedId
+            ? 'border-ruc-red bg-ruc-red-pale text-ruc-red'
+            : 'border-ruc-border bg-white text-ruc-text-dim hover:border-ruc-red/40 hover:text-ruc-red'"
+          @click="pick(findStart(item.id))"
+        >
+          {{ item.label }}
+        </button>
+      </div>
 
-        <!-- Skeleton -->
-        <div v-if="loading" class="grid grid-cols-1 md:grid-cols-2 gap-5 mb-12">
-          <div v-for="i in 4" :key="i" class="card animate-pulse">
-            <div class="flex gap-4">
-              <div class="w-12 h-12 rounded-xl bg-ruc-bg" />
-              <div class="flex-1 space-y-3">
-                <div class="h-5 bg-ruc-bg rounded w-24" />
-                <div class="h-4 bg-ruc-bg rounded w-full" />
-                <div class="h-3 bg-ruc-bg rounded w-16" />
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- Skill Cards -->
-        <div v-else-if="!skills.length" class="text-center py-10 text-ruc-text-dim font-ui text-sm">
-          未检测到技能目录。请确认后端 <code class="text-ruc-red">ARS_SKILLS_PATH</code> 指向含 deep-research 等技能的仓库根目录。
-        </div>
-        <div v-else class="grid grid-cols-1 md:grid-cols-2 gap-5 mb-12">
-          <div
-            v-for="skill in skills" :key="skill.name"
-            @click="handleSkillClick(skill)"
-            class="card cursor-pointer group"
-          >
-            <div class="flex items-start gap-4">
-              <div class="w-12 h-12 rounded-xl flex items-center justify-center flex-shrink-0 transition-colors duration-300"
-                   :class="settings.isConfigured ? 'bg-ruc-red-pale group-hover:bg-ruc-red-soft' : 'bg-ruc-bg'">
-                <component :is="SKILL_ICONS[skill.icon] || Search"
-                  class="w-6 h-6 transition-colors duration-300"
-                  :class="settings.isConfigured ? 'text-ruc-red group-hover:text-ruc-red-light' : 'text-ruc-text-light'" />
-              </div>
-              <div class="flex-1 min-w-0">
-                <h3 class="text-ruc-red font-display text-lg font-semibold mb-1.5 group-hover:text-ruc-red-light transition-colors">
-                  {{ SKILL_LABELS[skill.name] || skill.name }}
-                </h3>
-                <p class="text-ruc-text-dim text-sm font-ui leading-relaxed line-clamp-2 mb-2">{{ SKILL_DESCRIPTIONS[skill.name] || skill.description }}</p>
-                <span class="badge-dim">{{ skill.modes }} 种模式</span>
-              </div>
-              <ChevronRight class="w-5 h-5 text-ruc-text-light group-hover:text-ruc-red group-hover:translate-x-1 transition-all duration-300 flex-shrink-0 mt-3" />
-            </div>
-          </div>
-        </div>
+      <div class="w-full max-w-2xl grid grid-cols-1 sm:grid-cols-3 gap-3 mt-8">
+        <button
+          v-for="card in SUGGESTIONS"
+          :key="card.startId"
+          class="text-left bg-white border border-ruc-divider rounded-xl p-3 hover:border-ruc-red/30 hover:bg-ruc-red-pale/40 transition-colors"
+          :disabled="sending"
+          @click="start(card.text, card.startId)"
+        >
+          <span class="text-[10px] font-ui text-ruc-red">建议</span>
+          <p class="text-xs font-ui text-ruc-text leading-relaxed mt-1">{{ card.text }}</p>
+        </button>
       </div>
     </main>
-
-    <ModeSelector v-if="showModeSelector && selectedSkill" :skill="selectedSkill" @select="handleModeSelect" @close="showModeSelector = false" />
   </div>
 </template>

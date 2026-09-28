@@ -128,7 +128,13 @@
   }
 }
 
-/* ─── Markdown 渲染 ─── */
+@keyframes ars-indet {
+  0% { transform: translateX(-120%); }
+  100% { transform: translateX(280%); }
+}
+.ars-indet {
+  animation: ars-indet 1.15s ease-in-out infinite;
+}
 
 .markdown-body h1 {
   @apply text-2xl font-display font-semibold text-ruc-red mb-5 mt-8 pb-2 border-b-2 border-ruc-red/15;
@@ -212,4 +218,14 @@
 @keyframes fadeIn {
   from { opacity: 0; transform: translateY(6px); }
   to   { opacity: 1; transform: translateY(0); }
+}
+
+.editor-body,
+.editor-body .markdown-body,
+.editor-body .markdown-body h1,
+.editor-body .markdown-body h2,
+.editor-body .markdown-body h3,
+.editor-body .markdown-body p,
+.editor-body .markdown-body li {
+  font-family: "Songti SC", "SimSun", "Noto Serif SC", "Source Han Serif SC", "Source Serif 4", Georgia, serif;
 }

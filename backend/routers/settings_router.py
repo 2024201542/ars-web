@@ -6,7 +6,7 @@ from typing import Optional
 
 from config import DEFAULT_MODEL
 from providers import PROVIDERS, list_models, list_providers
-from services.state_tracker import tracker as state_tracker
+from services.state_tracker import inspect_secret, tracker as state_tracker
 from services.user_manager import get_user_id
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
@@ -35,20 +35,24 @@ async def get_settings(user_id: str = Depends(get_user_id)):
 
     providers_status = []
     for pid, p in PROVIDERS.items():
-        key_val = settings.get(p["key_setting"], "")
+        key_val = settings.get(p["key_setting"], "") or ""
+        usable, broken = inspect_secret(p["key_setting"], key_val)
         providers_status.append({
             "id": pid,
             "display_name": p["display_name"],
             "protocol": p["protocol"],
             "default_base_url": p["default_base_url"],
-            "key_configured": bool(key_val),
+            "key_configured": usable,
+            "key_unreadable": broken,
             "base_url": settings.get(p["base_url_setting"]) or "",
         })
 
     return {
         "model": model,
         "providers": providers_status,
-        "anthropic_key_configured": bool(settings.get("anthropic_api_key", "")),
+        "anthropic_key_configured": inspect_secret(
+            "anthropic_api_key", settings.get("anthropic_api_key", "") or ""
+        )[0],
     }
 
 

@@ -21,6 +21,19 @@ _ENCRYPTED_SETTING_KEYS = {
 }
 
 
+def inspect_secret(key: str, stored: str) -> tuple[bool, bool]:
+    """返回 (能用, 存了但解不开)。解不开时不能把密文当成密钥发出去。"""
+    if not stored:
+        return False, False
+    if key not in _ENCRYPTED_SETTING_KEYS:
+        return True, False
+    try:
+        decrypt_value(stored)
+        return True, False
+    except Exception:
+        return False, True
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -294,6 +307,14 @@ class StateTracker:
         )
         await self._commit()
 
+    async def update_session_entry(self, session_id: str, skill_name: str, mode_name: str):
+        await self._ensure_initialized()
+        await self._execute(
+            "UPDATE sessions SET skill_name = ?, mode_name = ?, updated_at = ? WHERE id = ?",
+            (skill_name, mode_name, _now(), session_id),
+        )
+        await self._commit()
+
     async def delete_session(self, session_id: str):
         await self._ensure_initialized()
         await self._execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
@@ -364,7 +385,7 @@ class StateTracker:
             try:
                 return decrypt_value(value)
             except Exception:
-                return value
+                return None
         return value
 
     async def set_setting(self, key: str, value: str, user_id: str = "default"):

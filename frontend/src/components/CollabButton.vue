@@ -6,7 +6,9 @@ import {
   Users, Loader2, Copy, Check, Ban, SendHorizontal, GitMerge, RotateCcw, UserPlus,
 } from 'lucide-vue-next'
 
-const props = defineProps<{ sessionId: string; disabled?: boolean }>()
+const props = withDefaults(defineProps<{ sessionId: string; disabled?: boolean; compact?: boolean; anchor?: 'above' | 'below' }>(), {
+  anchor: 'above',
+})
 const emit = defineEmits<{ refreshed: [] }>()
 
 const open = ref(false)
@@ -38,6 +40,16 @@ function placePanel() {
   let left = rect.right - width
   if (left < 12) left = 12
   if (left + width > window.innerWidth - 12) left = window.innerWidth - width - 12
+  if (props.anchor === 'below') {
+    panelStyle.value = {
+      position: 'fixed',
+      left: `${left}px`,
+      top: `${rect.bottom + 8}px`,
+      width: `${width}px`,
+      zIndex: '80',
+    }
+    return
+  }
   const gap = 8
   const bottom = Math.max(12, window.innerHeight - rect.top + gap)
   panelStyle.value = {
@@ -371,6 +383,7 @@ function buttonStatus() {
     <button
       class="btn-secondary text-sm flex items-center gap-1.5 max-w-[14rem]"
       :class="{
+        '!py-1.5 !px-3': props.compact,
         '!border-amber-400 !text-amber-900 bg-amber-50': buttonStatus()?.tone === 'warn',
         '!border-emerald-400 !text-emerald-900 bg-emerald-50': buttonStatus()?.tone === 'go',
         '!border-ruc-red !text-ruc-red bg-ruc-red-pale/60': buttonStatus()?.tone === 'alert',

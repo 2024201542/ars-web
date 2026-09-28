@@ -20,6 +20,7 @@ from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
 
 from logging_config import get_logger
+from services.provider_status import note as note_provider_error
 
 router = APIRouter(prefix="/v1/proxy", tags=["proxy"])
 
@@ -168,6 +169,7 @@ async def proxy_messages(request: Request):
             # 非流式
             resp = await client.post(target_url, json=openai_body, headers=headers)
             if resp.status_code != 200:
+                note_provider_error(resp.status_code, resp.text)
                 raise HTTPException(status_code=resp.status_code, detail=resp.text)
             data = resp.json()
             choice = data["choices"][0]
@@ -198,9 +200,10 @@ async def proxy_messages(request: Request):
                     async with _client.stream("POST", target_url, json=openai_body, headers=_headers) as resp:
                         if resp.status_code != 200:
                             body_text = await resp.aread()
+                            note_provider_error(resp.status_code, body_text.decode(errors="replace"))
                             yield json.dumps({
                                 "type": "error",
-                                "error": {"type": "api_error", "message": f"Provider error: {body_text.decode()}"}
+                                "error": {"type": "api_error", "message": f"Provider error: {body_text.decode(errors='replace')}"}
                             }).encode() + b"\n"
                             return
 

@@ -30,8 +30,9 @@ onMounted(async () => {
     baseUrlInputs.value[p.id] = p.base_url || ''
   }
   if (settings.providers.length > 0) {
+    const model = settings.models.find(m => m.id === settings.selectedModel)
     const cfg = settings.providers.find(p => p.key_configured)
-    activeTab.value = cfg?.id || settings.providers[0]?.id || ''
+    activeTab.value = model?.provider || cfg?.id || settings.providers[0]?.id || ''
   }
 })
 
@@ -126,14 +127,15 @@ async function handleModelChange(mid: string) { await settings.setModel(mid); to
               </div>
               <button
                 @click="saveProviderKey(p.id)"
-                :disabled="savingKey[p.id] || p.key_configured || !keyInputs[p.id]?.trim()"
+                :disabled="savingKey[p.id] || !keyInputs[p.id]?.trim()"
                 class="btn-primary text-sm flex items-center gap-1.5 h-10 px-4 flex-shrink-0"
               >
                 <Loader2 v-if="savingKey[p.id]" class="w-3.5 h-3.5 animate-spin" />
                 <Check v-else-if="savedKey[p.id]" class="w-3.5 h-3.5" />
-                <span>{{ p.key_configured ? '已配置' : '保存' }}</span>
+                <span>{{ p.key_configured ? '更新' : '保存' }}</span>
               </button>
             </div>
+            <p v-if="p.key_unreadable" class="text-xs text-ruc-red mt-2 font-ui">之前保存的密钥已经读不出来，请重新粘贴 sk- 开头的密钥，再点保存。</p>
           </div>
 
           <!-- Base URL -->
@@ -149,6 +151,7 @@ async function handleModelChange(mid: string) { await settings.setModel(mid); to
               @blur="saveProviderBaseUrl(p.id)"
               @keydown.enter="saveProviderBaseUrl(p.id)"
             />
+            <p v-if="p.id === 'qwen'" class="text-[11px] font-ui text-ruc-text-light mt-1.5 leading-relaxed">百炼的钥匙整段粘到上面的 API Key，再点保存。按量计费用默认地址。Coding Plan 把这里改成 https://coding.dashscope.aliyuncs.com/v1 ，点一下输入框外面就会保存。套餐里的模型名可以在辩论里手动加上。</p>
           </div>
 
           <!-- Models -->

@@ -6,13 +6,16 @@ import { SKILL_ROUTES } from '@/utils/constants'
 import { toast } from '@/composables/useToast'
 import { Bell, Loader2, GitMerge, RotateCcw, Clock, SendHorizontal } from 'lucide-vue-next'
 
+const props = withDefaults(defineProps<{ variant?: 'header' | 'sidebar' | 'toolbar' }>(), { variant: 'header' })
 const router = useRouter()
 const open = ref(false)
+const panelPos = ref({ top: 80, left: 248 })
 const loading = ref(false)
 const acting = ref(false)
 const items = ref<any[]>([])
 const alertCount = ref(0)
 const rootRef = ref<HTMLElement | null>(null)
+const panelRef = ref<HTMLElement | null>(null)
 const lastAlert = ref(0)
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
@@ -41,7 +44,10 @@ async function load(silent = false) {
 }
 
 function onDocClick(e: MouseEvent) {
-  if (rootRef.value && !rootRef.value.contains(e.target as Node)) open.value = false
+  const target = e.target as Node
+  if (rootRef.value?.contains(target)) return
+  if (panelRef.value?.contains(target)) return
+  open.value = false
 }
 
 onMounted(() => {
@@ -53,6 +59,19 @@ onUnmounted(() => {
   document.removeEventListener('click', onDocClick, true)
   if (pollTimer) clearInterval(pollTimer)
 })
+
+function toggleOpen(event: MouseEvent) {
+  open.value = !open.value
+  if (!open.value) return
+  const rect = (event.currentTarget as HTMLElement).getBoundingClientRect()
+  const width = 320
+  let left = props.variant === 'sidebar' ? rect.right + 8 : rect.right - width
+  if (left + width > window.innerWidth - 12) left = Math.max(12, window.innerWidth - width - 12)
+  let top = rect.top
+  if (top + 360 > window.innerHeight - 12) top = Math.max(12, window.innerHeight - 372)
+  panelPos.value = { top, left }
+  load()
+}
 
 function openSession(sessionId: string, skill?: string) {
   const routeName = SKILL_ROUTES[skill || ''] || 'research'
@@ -98,21 +117,33 @@ function kindText(it: any) {
 </script>
 
 <template>
-  <div ref="rootRef" class="relative">
+  <div ref="rootRef" class="relative" :class="props.variant === 'sidebar' ? 'w-full' : ''">
     <button
-      class="btn-secondary text-sm flex items-center gap-2 relative"
-      @click="open = !open; if (open) load()"
+      class="text-sm flex items-center gap-2 relative"
+      :class="props.variant === 'sidebar'
+        ? 'w-full px-2.5 py-1.5 rounded-lg font-ui text-ruc-text hover:bg-ruc-warm text-left'
+        : props.variant === 'toolbar'
+          ? 'px-2 py-1 rounded-lg text-xs font-ui text-ruc-text hover:bg-ruc-warm'
+          : 'btn-secondary'"
+      @click.stop="toggleOpen"
       title="协作待办"
     >
-      <Bell class="w-4 h-4" />
-      <span class="hidden sm:inline">待办</span>
+      <Bell class="w-3.5 h-3.5" />
+      <span :class="props.variant === 'header' ? 'hidden sm:inline' : ''">待办</span>
       <span
         v-if="alertCount > 0"
-        class="absolute -top-1 -right-1 min-w-[1.1rem] h-4 px-1 rounded-full bg-ruc-red text-white text-[10px] flex items-center justify-center"
+        class="min-w-[1.1rem] h-4 px-1 rounded-full bg-ruc-red text-white text-[10px] flex items-center justify-center"
+        :class="props.variant === 'sidebar' ? 'ml-auto' : props.variant === 'toolbar' ? '' : 'absolute -top-1 -right-1'"
       >{{ alertCount }}</span>
     </button>
 
-    <div v-if="open" class="absolute right-0 top-full mt-2 w-80 bg-white border border-ruc-divider rounded-xl shadow-modal z-50 p-3">
+    <Teleport to="body">
+    <div
+      v-if="open"
+      ref="panelRef"
+      class="fixed w-80 bg-white border border-ruc-divider rounded-xl shadow-modal z-[70] p-3"
+      :style="{ top: panelPos.top + 'px', left: panelPos.left + 'px' }"
+    >
       <p class="text-sm font-ui font-medium text-ruc-text mb-2">协作待办</p>
       <div v-if="loading" class="py-6 text-center text-ruc-text-light text-xs flex justify-center gap-2">
         <Loader2 class="w-4 h-4 animate-spin" /> 加载中
@@ -153,5 +184,6 @@ function kindText(it: any) {
         </div>
       </div>
     </div>
+    </Teleport>
   </div>
 </template>

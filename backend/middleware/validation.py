@@ -58,21 +58,21 @@ class InputValidationMiddleware(BaseHTTPMiddleware):
     """输入验证中间件。"""
     
     async def dispatch(self, request: Request, call_next):
-        # 只检查需要验证的路由
-        if request.method in ("POST", "PUT", "PATCH"):
+        # 只校验 JSON。Word、PDF、图片走 multipart，正文是二进制，不能当 JSON 读。
+        content_type = (request.headers.get("content-type") or "").lower()
+        if request.method in ("POST", "PUT", "PATCH") and "application/json" in content_type:
             try:
-                # 读取请求体
                 body = await request.body()
-                # 将 body 缓存回 request，避免下游路由无法读取
                 request._body = body
                 if body:
                     import json
-                    try:
-                        data = json.loads(body)
-                        # 验证输入
+                    data = json.loads(body)
+                    if isinstance(data, dict):
                         self._validate_data(data, request.url.path)
-                    except json.JSONDecodeError:
-                        pass  # 非 JSON 数据，跳过验证
+            except HTTPException:
+                raise
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                pass
             except Exception as e:
                 _logger.error(f"输入验证失败: {e}")
                 raise HTTPException(status_code=400, detail="请求格式错误")
