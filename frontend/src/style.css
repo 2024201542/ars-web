@@ -220,6 +220,11 @@
   to   { opacity: 1; transform: translateY(0); }
 }
 
+.ars-mermaid svg {
+  max-width: 100%;
+  height: auto;
+}
+
 .editor-body,
 .editor-body .markdown-body,
 .editor-body .markdown-body h1,

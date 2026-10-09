@@ -1,6 +1,7 @@
 """文件导出 API —— 完整会话问答导出"""
 
 import uuid
+import os
 import pathlib
 import subprocess
 from datetime import datetime
@@ -15,7 +16,9 @@ from services.user_manager import get_user_id
 
 router = APIRouter(prefix="/api/sessions", tags=["export"])
 
-EXPORT_DIR = pathlib.Path(__file__).parent.parent / "data" / "exports"
+EXPORT_DIR = pathlib.Path(
+    os.environ.get("ARS_EXPORT_DIR", str(pathlib.Path(__file__).parent.parent / "data" / "exports"))
+)
 EXPORT_DIR.mkdir(parents=True, exist_ok=True)
 
 

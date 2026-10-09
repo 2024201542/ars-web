@@ -134,6 +134,8 @@ export const api = {
         summarize_scope: debate?.summarize_scope || undefined,
         summarize_pair: debate?.summarize_pair && debate.summarize_pair.length ? debate.summarize_pair : undefined,
         summarize_rounds: debate?.summarize_rounds && debate.summarize_rounds.length ? debate.summarize_rounds : undefined,
+        debate_rounds: debate?.rounds || undefined,
+        debate_materials: debate?.materials && debate.materials.length ? debate.materials : undefined,
       }),
     })
   },
@@ -296,6 +298,13 @@ export const api = {
     withAuthToken(`${BASE_URL}/workspace/files/download?session_id=${encodeURIComponent(sessionId)}&path=${encodeURIComponent(path)}${source && source !== 'site' ? `&source=${encodeURIComponent(source)}` : ''}`),
   getFilePreviewUrl: (sessionId: string, path: string, source?: string) =>
     withAuthToken(`${BASE_URL}/workspace/files/preview?session_id=${encodeURIComponent(sessionId)}&path=${encodeURIComponent(path)}${source && source !== 'site' ? `&source=${encodeURIComponent(source)}` : ''}`),
+  getPdfOcrProgress: (sessionId: string, path: string, source?: string) =>
+    request<{ done: number; total: number; warming: boolean; needs_ocr: boolean; pending: number }>(
+      `/workspace/files/pdf-ocr?session_id=${encodeURIComponent(sessionId)}&path=${encodeURIComponent(path)}${source && source !== 'site' ? `&source=${encodeURIComponent(source)}` : ''}`),
+  getPdfPageUrl: (sessionId: string, path: string, page: number, source?: string) =>
+    withAuthToken(`${BASE_URL}/workspace/files/pdf-page?session_id=${encodeURIComponent(sessionId)}&path=${encodeURIComponent(path)}&page=${page}${source && source !== 'site' ? `&source=${encodeURIComponent(source)}` : ''}`),
+  getPdfOpenUrl: (sessionId: string, path: string, source?: string) =>
+    withAuthToken(`${BASE_URL}/workspace/files/pdf?session_id=${encodeURIComponent(sessionId)}&path=${encodeURIComponent(path)}${source && source !== 'site' ? `&source=${encodeURIComponent(source)}` : ''}`),
   deleteWorkspaceFile: (sessionId: string, path: string, source?: string) =>
     request<void>(`/workspace/files?session_id=${encodeURIComponent(sessionId)}&path=${encodeURIComponent(path)}${source && source !== 'site' ? `&source=${encodeURIComponent(source)}` : ''}`, { method: 'DELETE' }),
   refreshWorkspace: (sessionId: string) =>

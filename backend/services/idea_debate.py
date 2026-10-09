@@ -154,10 +154,42 @@ def prepare_debate(mode: str, ready: list[dict], seats: list[dict]) -> dict:
     return {"ok": True, "text": "", "models": picked[:4]}
 
 
-def parse_topic_plan(text: str) -> dict:
+def parse_topic_plan(text: str, participants: list[dict] | None = None) -> dict:
+    """解析拟题输出。
+
+    容错三件事（都来自实测）：
+    1. 模型会照抄格式模板——"一句话"被当辩题、"模型id|这个模型的看法"被当一条立场；
+    2. 模型常用显示名（"DeepSeek Chat"）而不是模型 id 当键，这里映射回 id；
+    3. 键名带序号、圆点、括号等杂质时尽量对齐到参与者。
+    """
     raw = text or ""
     topic = ""
     stances: dict[str, str] = {}
+
+    participants = participants or []
+    by_id = {str(p.get("id")): str(p.get("id")) for p in participants}
+    by_name = {str(p.get("name")): str(p.get("id")) for p in participants if p.get("name")}
+
+    def clean_key(key: str) -> str:
+        k = (key or "").strip().strip("：:").strip()
+        k = k.lstrip("-*•·0123456789.、)）(（ ").strip()
+        if k in by_id:
+            return by_id[k]
+        if k in by_name:
+            return by_name[k]
+        # 显示名里混了括号说明的情况，如 "DeepSeek Chat（国家主导）"
+        for name, mid in by_name.items():
+            if name and (name in k or k in name):
+                return mid
+        return k
+
+    def is_junk(key: str, value: str) -> bool:
+        if not key or key in {"模型id", "模型ID", "id", "ID", "模型"}:
+            return True
+        if not value or "这个模型的看法" in value or value in {"立场", "看法"}:
+            return True
+        return False
+
     if "【辩题】" in raw:
         rest = raw.split("【辩题】", 1)[1]
         if "【看法】" in rest:
@@ -166,15 +198,19 @@ def parse_topic_plan(text: str) -> dict:
             for line in tail.splitlines():
                 if "|" not in line:
                     continue
-                model_id, stance = line.split("|", 1)
-                model_id = model_id.strip()
+                key, stance = line.split("|", 1)
+                key = clean_key(key)
                 stance = stance.strip()
-                if model_id and stance:
-                    stances[model_id] = stance
+                if not is_junk(key, stance):
+                    stances[key] = stance
         else:
             topic = rest.strip().splitlines()[0].strip() if rest.strip() else ""
     elif raw.strip():
         topic = raw.strip().splitlines()[0].strip()
+
+    # 模板残留的占位辩题
+    if topic.strip("：:。 　") in {"一句话", "（一句话）", "辩题", "（辩题）", "待定"}:
+        topic = ""
     return {"topic": topic, "stances": stances}
 
 
@@ -275,6 +311,141 @@ def _card(model: dict, round_no: int, thinking: str, answer: str, error: str, ki
     }
 
 
+# ── 流式调用 ──────────────────────────────────────────────────────────────
+# 原来 _complete 是整段 await，模型写完才一次性返回，界面上就是整段蹦出来。
+# 这里改成边收边发，并保持【思考】/【回答】的分段：两个标记都可能被切在半个
+# 数据包里，所以用一个缓冲累积、拿稳了再切分。
+
+_THINK_OPEN = "【思考】"
+_ANSWER_OPEN = "【回答】"
+
+
+async def _stream_complete(model: dict, key: str, base: str, system: str, user: str,
+                           max_tokens: int = 1000,
+                           marker_mode: bool = True) -> AsyncIterator[dict]:
+    """流式调用模型，产出 {kind: 'thinking'|'answer'|'error', delta} 事件。
+
+    marker_mode=False 时不做【思考】/【回答】切分，正文统一按 answer 下发
+    （用于辩题生成这类自定义输出格式、没有那两种标记的场景）。
+    """
+    provider = PROVIDERS.get(model["provider"]) or {}
+    anthropic = provider.get("protocol") == "anthropic"
+    timeout = httpx.Timeout(120.0 if max_tokens > 1000 else 90.0, connect=15.0)
+    headers = {"content-type": "application/json"}
+    if anthropic:
+        root = (base or "https://api.anthropic.com").rstrip("/")
+        url = root + "/v1/messages"
+        headers.update({"x-api-key": key, "anthropic-version": "2023-06-01"})
+        body = {"model": model["id"], "max_tokens": max_tokens, "system": system,
+                "messages": [{"role": "user", "content": user}], "stream": True}
+    else:
+        url = chat_completions_url(base)
+        headers["Authorization"] = f"Bearer {key}"
+        body = {"model": model["id"], "max_tokens": max_tokens, "stream": True,
+                "messages": [{"role": "system", "content": system},
+                             {"role": "user", "content": user}]}
+
+    buf = ""
+    phase = "head"          # head → thinking → answer
+    got_any = False
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            async with client.stream("POST", url, headers=headers, json=body) as resp:
+                if resp.status_code >= 400:
+                    detail = ""
+                    try:
+                        detail = (await resp.aread()).decode("utf-8", "replace")[:200]
+                    except Exception:
+                        pass
+                    yield {"kind": "error", "delta": f"{model['name']} 没有返回（{resp.status_code}）{detail}"}
+                    return
+                async for line in resp.aiter_lines():
+                    line = (line or "").strip()
+                    if not line or line.startswith(":"):
+                        continue
+                    if not line.startswith("data:"):
+                        continue
+                    payload = line[5:].strip()
+                    if payload == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(payload)
+                    except json.JSONDecodeError:
+                        continue
+
+                    think_piece = ""
+                    text_piece = ""
+                    if anthropic:
+                        ctype = chunk.get("type")
+                        if ctype == "content_block_delta":
+                            delta = chunk.get("delta") or {}
+                            if delta.get("type") == "thinking_delta":
+                                think_piece = delta.get("thinking") or ""
+                            else:
+                                text_piece = delta.get("text") or ""
+                    else:
+                        choice = (chunk.get("choices") or [{}])[0]
+                        delta = choice.get("delta") or {}
+                        think_piece = delta.get("reasoning_content") or ""
+                        text_piece = delta.get("content") or ""
+                        if isinstance(text_piece, list):
+                            text_piece = "".join(b.get("text", "") for b in text_piece if isinstance(b, dict))
+
+                    # 模型自带的思维链：回答开始前先放出来
+                    if think_piece:
+                        got_any = True
+                        yield {"kind": "thinking", "delta": think_piece}
+
+                    if not text_piece:
+                        continue
+                    got_any = True
+                    if not marker_mode:
+                        # 自定义输出格式（如辩题）：不做标记切分，直接按正文流
+                        yield {"kind": "answer", "delta": text_piece}
+                        continue
+                    if phase == "answer":
+                        yield {"kind": "answer", "delta": text_piece}
+                        continue
+
+                    buf += text_piece
+                    # 防止把还没收全的【回答】当成正文发出去
+                    if any(_ANSWER_OPEN.startswith(buf[-k:]) for k in range(1, len(_ANSWER_OPEN) + 1)):
+                        continue
+                    if _ANSWER_OPEN not in buf:
+                        # 还没到【回答】：这段属于思考，但要剥掉模型自己写的【思考】标记
+                        cut = buf.rfind(_THINK_OPEN)
+                        if cut < 0 and any(_THINK_OPEN.startswith(buf[-k:])
+                                           for k in range(1, len(_THINK_OPEN) + 1)):
+                            # 结尾正好像半个【思考】，再等等，别把它当正文
+                            continue
+                        body_text = buf[cut + len(_THINK_OPEN):] if cut >= 0 else buf
+                        if body_text:
+                            phase = "thinking"
+                            yield {"kind": "thinking", "delta": body_text}
+                        buf = ""
+                        continue
+
+                    head, tail = buf.split(_ANSWER_OPEN, 1)
+                    cut = head.rfind(_THINK_OPEN)
+                    think_text = head[cut + len(_THINK_OPEN):] if cut >= 0 else head
+                    if think_text.strip():
+                        yield {"kind": "thinking", "delta": think_text}
+                    phase = "answer"
+                    buf = ""
+                    if tail:
+                        yield {"kind": "answer", "delta": tail}
+
+        if buf.strip():
+            if phase == "answer":
+                yield {"kind": "answer", "delta": buf}
+            else:
+                yield {"kind": "thinking", "delta": buf}
+        if not got_any:
+            yield {"kind": "error", "delta": f"{model['name']} 没有写出内容"}
+    except (httpx.HTTPError, ValueError) as exc:
+        yield {"kind": "error", "delta": f"{model['name']} 没有连上：{type(exc).__name__}"}
+
+
 def recent_socratic_turns(messages: list[dict], limit: int = 6) -> str:
     rows: list[str] = []
     for message in messages or []:
@@ -321,7 +492,11 @@ def _speech_prompt(topic: str, model: dict, prior: list[dict], rebuttal: bool, h
     if heard:
         lines.append(f"已经发言的结果：\n{heard}")
     if hint:
-        lines.append(f"主持人在上一轮之后的意见，这一轮每个人都要看见，并顺着它继续互相反驳：\n{hint}")
+        lines.append(
+            "下面是主持人对这场辩论流程的指令，它不是任何辩手的发言："
+            "不要反驳它，也不要点名引用它来攻击对方；"
+            "只需按它调整你接下来发言的方向和重点：\n" + hint
+        )
     if debate and rebuttal:
         lines.append("你看得到上面每位的结果。点名并引用其中一句原话再反驳。不要教写作者该怎么改。先写【思考】，再写【回答】。")
     elif debate:
@@ -346,8 +521,14 @@ async def stream_debate(
     context_excerpt: str = "",
     context_total: int = 0,
     prior_turns: str = "",
+    max_rounds: int = 2,
+    materials_text: str = "",
 ) -> AsyncIterator[dict]:
-    """一轮里依次发言，后发言的人看得见前面的结果。一轮结束后再等主持人的意见。"""
+    """按轮进行：每轮每位依次发言（第 2 轮起互相反驳），轮间停下等主持人。
+
+    主持人的意见在每一轮开始前被消费，并以 kind=host 的卡片显示，
+    prompt 里明确它是流程指令而不是辩手发言，不会被当成论点反驳。
+    """
     system = _system(mode_name)
     topic = (user_message or "").strip()
     socratic = mode_name == "socratic"
@@ -361,81 +542,170 @@ async def stream_debate(
             "event": "debate_context",
             "data": {"included": len(context_excerpt), "total": context_total, "cap": SPEECH_CONTEXT_CHARS},
         }
+    if materials_text:
+        topic += (
+            "\n\n参考材料（节选，仅作论据背景；先按给你的看法辩论，再从材料里找能支撑你的内容）：\n"
+            + materials_text
+        )
+        yield {"event": "debate_context", "data": {"materials": True, "chars": len(materials_text)}}
     debating = mode_name in {"contrast", "debate"}
+    rounds = max(1, min(4, int(max_rounds or 2)))
 
-    async def ask(model: dict, prompt: str, round_no: int, kind: str = "speech") -> dict:
+    async def speak(model: dict, prompt: str, round_no: int, kind: str = "speech") -> AsyncIterator[dict]:
+        """边收边发一位的发言；最后一条 debate_voice 是完整卡片。"""
         if cancel_event and cancel_event.is_set():
-            return _card(model, round_no, "", "", "已停止", kind)
-        thinking, answer, error = await _complete(
+            yield {"event": "debate_voice", "data": _card(model, round_no, "", "", "已停止", kind)}
+            return
+        yield {"event": "debate_stream",
+               "data": {"stage": "start", "kind": kind, "model": model["id"],
+                        "name": model["name"], "round": round_no}}
+        thinking_parts: list[str] = []
+        answer_parts: list[str] = []
+        error = ""
+        async for chunk in _stream_complete(
             model, keys.get(model["provider"]) or "", bases.get(model["provider"]) or "", system, prompt,
             2400 if debating else 1000,
-        )
-        return _card(model, round_no, thinking, answer, error, kind)
+        ):
+            ckind = chunk.get("kind")
+            delta = chunk.get("delta") or ""
+            if ckind == "error":
+                error = delta
+                break
+            if ckind == "thinking":
+                thinking_parts.append(delta)
+            else:
+                answer_parts.append(delta)
+            yield {"event": "debate_delta",
+                   "data": {"model": model["id"], "round": round_no, "kind": kind,
+                            "part": ckind, "delta": delta}}
+        yield {"event": "debate_stream",
+               "data": {"stage": "end", "kind": kind, "model": model["id"], "round": round_no}}
+        yield {"event": "debate_voice",
+               "data": _card(model, round_no, "".join(thinking_parts).strip(),
+                             "".join(answer_parts).strip(), error, kind)}
 
-    async def pause_for_next_round() -> AsyncIterator[dict]:
+    async def pause_for_next_round(next_round: int) -> AsyncIterator[dict]:
         if not debating or not session_id:
             return
-        yield {"event": "debate_pause", "data": {"name": "下一轮", "round": 2, "between": True}}
+        yield {"event": "debate_pause", "data": {"name": f"第 {next_round} 轮", "round": next_round, "between": True}}
         async for beat in hold_until_host(session_id, cancel_event):
             yield beat
 
+    def host_card(hint: str, round_no: int) -> dict:
+        return {
+            "model": "host",
+            "name": "主持人",
+            "provider": "",
+            "provider_name": "",
+            "stance": "",
+            "round": round_no,
+            "kind": "host",
+            "thinking": "",
+            "answer": hint,
+            "error": "",
+        }
+
     if len(models) == 1:
         yield {"event": "phase_start", "data": {"phase": "tool", "description": f"正在听{models[0]['name']}"}}
-        card = await ask(models[0], _speech_prompt(topic, models[0], [], False, "", debating, socratic), 1)
-        yield {"event": "debate_voice", "data": card}
+        card = {}
+        async for evt in speak(models[0], _speech_prompt(topic, models[0], [], False, "", debating, socratic), 1):
+            if evt.get("event") == "debate_voice":
+                card = evt.get("data") or {}
+            yield evt
         yield {"event": "message", "data": {"delta": f"{models[0]['name']} 已写完。思考和结果分开，长的可以展开。"}}
         yield {"event": "done", "data": {"message": "完成"}}
         return
 
     spoken: list[dict] = []
-    for index, model in enumerate(models, 1):
+    for round_no in range(1, rounds + 1):
         if cancel_event and cancel_event.is_set():
             break
-        yield {"event": "phase_start", "data": {"phase": "tool", "description": f"第 {index} 位：{model['name']}"}}
-        card = await ask(model, _speech_prompt(topic, model, spoken, False, "", debating), 1)
-        spoken.append(card)
-        yield {"event": "debate_voice", "data": card}
-    usable = [card for card in spoken if not card.get("error")]
-    if len(usable) < 2 or (cancel_event and cancel_event.is_set()):
-        yield {"event": "message", "data": {"delta": "这一轮先停在这里。要继续，可以换一位来总结，或再发一句。"}}
-        yield {"event": "done", "data": {"message": "完成"}}
-        return
-    async for evt in pause_for_next_round():
-        yield evt
-    if cancel_event and cancel_event.is_set():
-        yield {"event": "done", "data": {"message": "完成"}}
-        return
-    host_note = drain_debate_hints(session_id) if session_id else ""
-    for model in models:
-        if cancel_event and cancel_event.is_set():
-            break
-        if any(card.get("model") == model["id"] and card.get("error") for card in spoken):
-            continue
-        yield {"event": "phase_start", "data": {"phase": "tool", "description": f"{model['name']} 回应"}}
-        others = [item for item in spoken if item.get("model") != model["id"]]
-        card = await ask(model, _speech_prompt(topic, model, others, True, host_note, debating), 2)
-        spoken.append(card)
-        yield {"event": "debate_voice", "data": card}
-    names = "、".join(card["name"] for card in usable)
+        # 每一轮开始前先消费主持人的意见：以独立卡片展示，并明确不是辩手发言
+        host_note = drain_debate_hints(session_id) if session_id else ""
+        if host_note:
+            yield {"event": "debate_voice", "data": host_card(host_note, round_no)}
+        rebuttal = round_no > 1
+        for index, model in enumerate(models, 1):
+            if cancel_event and cancel_event.is_set():
+                break
+            # 前面轮次已经出错的模型，后面不再发言（避免重复报错刷屏）
+            if any(c.get("model") == model["id"] and c.get("error") for c in spoken):
+                continue
+            label = f"第 {round_no} 轮 · 第 {index} 位：{model['name']}" if rounds > 1 else model['name']
+            yield {"event": "phase_start", "data": {"phase": "tool", "description": label}}
+            others = [c for c in spoken if c.get("model") != model["id"]] if rebuttal else spoken
+            card = {}
+            async for evt in speak(
+                model,
+                _speech_prompt(topic, model, others, rebuttal, host_note, debating),
+                round_no,
+            ):
+                if evt.get("event") == "debate_voice":
+                    card = evt.get("data") or {}
+                yield evt
+            if card:
+                spoken.append(card)
+        usable = [c for c in spoken if c.get("kind") == "speech" and not c.get("error")]
+        if len(usable) < 2 or (cancel_event and cancel_event.is_set()):
+            yield {"event": "message", "data": {"delta": "这一轮先停在这里。要继续，可以换一位来总结，或再发一句。"}}
+            yield {"event": "done", "data": {"message": "完成"}}
+            return
+        if round_no < rounds:
+            async for evt in pause_for_next_round(round_no + 1):
+                yield evt
+
+    names = "、".join(dict.fromkeys(card["name"] for card in spoken if card.get("kind") == "speech" and not card.get("error")))
     yield {"event": "message", "data": {"delta": f"{names} 已按顺序发过言。思考和结果分开，长的可以展开。"}}
     yield {"event": "done", "data": {"message": "完成"}}
+
+
+_TOPIC_SYSTEM = (
+    "你在帮写作者设计一场多模型辩论。只按用户给出的格式输出，"
+    "不要加【思考】【回答】这类标题，不要写多余解释。"
+)
 
 
 async def stream_topic(model: dict, idea: str, participants: list[dict], keys: dict, bases: dict) -> AsyncIterator[dict]:
     names = "\n".join(f"{item['id']}|{item['name']}" for item in participants)
     prompt = (
-        f"写作者的看法：\n{idea}\n\n参加辩论的模型：\n{names}\n\n"
+        f"写作者的看法：\n{idea}\n\n参加辩论的模型（每行是 模型id|显示名）：\n{names}\n\n"
         "请把它收成一个可以辩论的题目，并给每个模型指定不同看法。"
-        "严格按这个格式，不要加别的标题：\n【辩题】\n一句话\n【看法】\n模型id|这个模型的看法"
+        "如果看法里附了文章节选，先据此归纳各方作者的真实立场，不要凭空编造。\n"
+        "输出要求（严格遵守，只输出这些内容）：\n"
+        "第一行写【辩题】，第二行写辩题本身（限一句，不要出现“一句话”这类占位文字）；\n"
+        "第三行写【看法】，之后每行一个模型，格式为：模型id|立场，"
+        "立场限 60 字以内；必须使用上面给的模型id，不要用显示名。"
     )
-    thinking, answer, error = await _complete(
-        model, keys.get(model["provider"]) or "", bases.get(model["provider"]) or "", _FORMAT, prompt,
-    )
+    # 边写边发：辩题草稿逐字下发；辩题是自定义格式，不走【思考】/【回答】切分
+    thinking_parts: list[str] = []
+    answer_parts: list[str] = []
+    error = ""
+    yield {"event": "debate_stream", "data": {"stage": "start", "kind": "topic", "name": model.get("name") or ""}}
+    async for chunk in _stream_complete(
+        model, keys.get(model["provider"]) or "", bases.get(model["provider"]) or "",
+        _TOPIC_SYSTEM, prompt, marker_mode=False,
+    ):
+        kind = chunk.get("kind")
+        delta = chunk.get("delta") or ""
+        if kind == "error":
+            error = delta
+            break
+        if kind == "thinking":
+            thinking_parts.append(delta)
+        else:
+            answer_parts.append(delta)
+        yield {"event": "debate_delta", "data": {"kind": kind, "delta": delta}}
+
     if error:
+        yield {"event": "debate_stream", "data": {"stage": "end", "kind": "topic"}}
         yield {"event": "message", "data": {"delta": error}}
         yield {"event": "done", "data": {"message": "完成"}}
         return
-    plan = parse_topic_plan(answer or thinking)
+
+    thinking = "".join(thinking_parts).strip()
+    answer = "".join(answer_parts).strip()
+    plan = parse_topic_plan(answer or thinking, participants)
+    yield {"event": "debate_stream", "data": {"stage": "end", "kind": "topic"}}
     yield {"event": "debate_topic", "data": plan}
     text = plan["topic"] or "辩题已经拟好。"
     yield {"event": "message", "data": {"delta": f"辩题：{text}\n可以改看法，再开始辩论。"}}

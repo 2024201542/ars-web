@@ -42,6 +42,8 @@ export const FUNCTION_GROUPS: FunctionGroup[] = [
     label: '文献查找',
     modes: [
       { mode: 'search', label: '开放检索', hint: '向 OpenAlex 要真实记录。关键词检索受限时先用 Crossref 定位 DOI。知网仍未接通，不会编造文献' },
+      { mode: 'passage', label: '按文段', hint: '贴一段正在写的文字。当前模型先拟检索词，再向 OpenAlex 检索。不会编造文献' },
+      { mode: 'files', label: '查找文件', hint: '找出带公开 PDF 的论文，勾选后放到左侧文件夹。没有公开全文的不会下载' },
     ],
   },
   {
@@ -70,6 +72,7 @@ export const FUNCTION_GROUPS: FunctionGroup[] = [
       { mode: 'lit-review', label: '文献综述', hint: '写成一篇有论点的综述' },
       { mode: 'lit-search', label: '查文献', hint: '知网检索还没接通，接口先留在这里' },
       { mode: 'format-convert', label: '格式转换', hint: '转换引用或稿件格式' },
+      { mode: 'structure-map', label: '结构图', hint: '按已有文稿另存一份 HTML 结构图，不改原文' },
       { mode: 'citation-check', label: '引用检查', hint: '查引用是否齐全、格式是否统一' },
       { mode: 'disclosure', label: '声明', hint: '写伦理、利益冲突、数据可用性声明' },
     ],

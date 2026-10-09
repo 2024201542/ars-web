@@ -14,10 +14,18 @@ from services.idea_debate import (
     voice_parts,
 )
 from services.literature_search import (
+    PASSAGE_QUERY_PROMPT,
+    _reject_ip,
+    assert_public_https,
+    ensure_pdf,
     format_works,
+    open_pdf_url,
+    parse_search_queries,
     reserved_literature,
+    search_from_passage,
     search_literature,
     work_from_crossref,
+    work_from_openalex,
     works_from_openalex,
 )
 
@@ -69,6 +77,42 @@ def test_openalex_records_keep_blank_fields():
     assert "10.1000/example" in text
     assert "2. Only a title\n作者：\n年份：\n来源：\nDOI：" in text
     assert "没有补写" in text
+
+
+def test_open_pdf_ignores_landing_page_and_http():
+    blocked = open_pdf_url({
+        "best_oa_location": {"pdf_url": "http://example.com/a.pdf", "landing_page_url": "https://example.com/a"},
+        "open_access": {"oa_url": "https://example.com/landing"},
+    })
+    assert blocked == ""
+    opened = work_from_openalex({
+        "display_name": "Attention Is All You Need",
+        "best_oa_location": {"pdf_url": "https://arxiv.org/pdf/1706.03762"},
+    })
+    assert opened["pdf_url"] == "https://arxiv.org/pdf/1706.03762"
+    blank = format_works("memory", [{"title": "Only a title", "authors": [], "year": "", "source": "", "doi": ""}], show_files=True)
+    assert "全文：\n" in blank
+    assert "全文：有公开 PDF" not in blank
+    assert "不会下载" in blank
+    _reject_ip("198.18.0.51")
+    try:
+        _reject_ip("10.1.2.3")
+    except ValueError as exc:
+        assert "不是公开" in str(exc)
+    else:
+        raise AssertionError("内网地址不应下载")
+    try:
+        assert_public_https("https://127.0.0.1/paper.pdf")
+    except ValueError as exc:
+        assert "不是公开" in str(exc)
+    else:
+        raise AssertionError("内网地址不应下载")
+    try:
+        ensure_pdf(b"<html>", 1000)
+    except ValueError as exc:
+        assert "不是 PDF" in str(exc)
+    else:
+        raise AssertionError("网页不应当成论文保存")
 
 
 def test_crossref_locator_keeps_blank_fields():
@@ -129,6 +173,90 @@ def test_rate_limit_reads_openalex_by_doi(monkeypatch):
     assert "Crossref 定位" in result["message"]
     assert "Journal of Memory" in result["message"]
     assert "Crossref Venue" not in result["message"]
+
+
+def test_parse_search_queries_keeps_distinct_titles():
+    queries = parse_search_queries(
+        "1. Attention Is All You Need\n"
+        "Attention Is All You Need\n"
+        "- transformer architecture\n"
+        "检索词：\n"
+        "第四条不要了"
+    )
+    assert queries == ["Attention Is All You Need", "transformer architecture", "第四条不要了"]
+    assert "Attention Is All You Need" in PASSAGE_QUERY_PROMPT
+
+
+def test_passage_search_uses_model_queries(monkeypatch):
+    import asyncio
+
+    async def fake_complete(model, key, base, system, user, max_tokens=1000):
+        assert "Attention Is All You Need" in system
+        assert "注意力" in user
+        return "", "Attention Is All You Need\ntransformer architecture", ""
+
+    seen = []
+
+    async def fake_search(query, with_files=False):
+        seen.append(query)
+        if query == "Attention Is All You Need":
+            return {"status": "ok", "items": [{
+                "title": "Attention Is All You Need",
+                "authors": ["Ashish Vaswani"],
+                "year": 2017,
+                "source": "NeurIPS",
+                "doi": "10.48550/arXiv.1706.03762",
+                "pdf_url": "",
+            }]}
+        return {"status": "ok", "items": [
+            {
+                "title": "Attention Is All You Need",
+                "authors": ["Ashish Vaswani"],
+                "year": 2017,
+                "source": "NeurIPS",
+                "doi": "10.48550/arXiv.1706.03762",
+                "pdf_url": "",
+            },
+            {
+                "title": "A survey of transformers",
+                "authors": [],
+                "year": 2022,
+                "source": "",
+                "doi": "10.1000/survey",
+                "pdf_url": "",
+            },
+        ]}
+
+    monkeypatch.setattr("services.idea_debate._complete", fake_complete)
+    monkeypatch.setattr("services.literature_search.search_openalex", fake_search)
+    result = asyncio.run(search_from_passage(
+        "写一篇关于注意力机制的计算机论文",
+        "deepseek-chat",
+        "key",
+        "https://api.deepseek.com",
+        "deepseek",
+    ))
+    assert seen == ["Attention Is All You Need", "transformer architecture"]
+    assert [item["title"] for item in result["items"]] == ["Attention Is All You Need", "A survey of transformers"]
+    assert "拟了检索词" in result["message"]
+    assert "Ashish Vaswani" in result["message"]
+    assert result["message"].count("Attention Is All You Need") >= 2
+
+
+def test_passage_without_queries_does_not_search(monkeypatch):
+    import asyncio
+
+    async def fake_complete(*args, **kwargs):
+        return "", "", "DeepSeek Chat 没有返回（401）"
+
+    async def fail_search(*args, **kwargs):
+        raise AssertionError("模型没有给出检索词时不应检索")
+
+    monkeypatch.setattr("services.idea_debate._complete", fake_complete)
+    monkeypatch.setattr("services.literature_search.search_openalex", fail_search)
+    result = asyncio.run(search_from_passage("一段文字", "deepseek-chat", "key", "", "deepseek"))
+    assert result["items"] == []
+    assert "没有编造文献" in result["message"]
 
 
 def test_cnki_search_does_not_invent(monkeypatch):

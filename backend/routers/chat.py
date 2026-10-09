@@ -112,10 +112,13 @@ async def chat(request: Request, session_id: str, req: ChatRequest, user_id: str
     mode_name = session.get("mode_name") or ""
 
     api_key = await state_tracker.get_setting(provider["key_setting"], user_id)
-    literature_lookup = (skill_name == "academic-paper" and mode_name == "lit-search") or (
-        skill_name == "literature-find" and mode_name == "search"
+    keyword_lookup = (skill_name == "academic-paper" and mode_name == "lit-search") or (
+        skill_name == "literature-find" and mode_name in {"search", "files"}
     )
-    if skill_name != "idea-debate" and not literature_lookup and not api_key:
+    passage_lookup = skill_name == "literature-find" and mode_name == "passage"
+    literature_lookup = keyword_lookup or passage_lookup
+    want_files = skill_name == "literature-find" and mode_name == "files"
+    if skill_name != "idea-debate" and not keyword_lookup and not api_key:
         raw = await state_tracker.get_settings(user_id)
         _, broken = inspect_secret(provider["key_setting"], raw.get(provider["key_setting"], "") or "")
         if broken:
@@ -183,6 +186,7 @@ async def chat(request: Request, session_id: str, req: ChatRequest, user_id: str
     await state_tracker.add_message(session_id, "user", req.message, metadata=user_meta)
 
     lit_text = ""
+    lit_payload = None
     debate_job = None
     debate_keys: dict = {}
     debate_bases: dict = {}
@@ -190,11 +194,34 @@ async def chat(request: Request, session_id: str, req: ChatRequest, user_id: str
     debate_participants: list[dict] = []
     summary_voices: list[dict] = []
     if literature_lookup:
-        from services.literature_search import search_literature
-        found = await search_literature(req.message, "cnki" if mode_name == "lit-search" else "openalex")
+        if passage_lookup:
+            from services.literature_search import search_from_passage
+            provider_id = get_provider_id_for_model(model)
+            base = (custom_base or "").strip() or (provider.get("default_base_url") or "")
+            found = await search_from_passage(req.message, model, api_key or "", base, provider_id)
+        else:
+            from services.literature_search import search_literature
+            found = await search_literature(
+                req.message,
+                "cnki" if mode_name == "lit-search" else "openalex",
+                want_files,
+            )
         lit_text = found.get("message") or ""
         if found.get("status") != "ok":
             lit_text += "\n\n记下的检索：" + (found.get("query") or "（空）")
+        elif want_files:
+            lit_payload = {
+                "items": [
+                    {
+                        "doi": item.get("doi") or "",
+                        "title": item.get("title") or "",
+                        "year": item.get("year") or "",
+                        "has_pdf": bool(item.get("pdf_url")),
+                    }
+                    for item in (found.get("items") or [])
+                    if isinstance(item, dict)
+                ]
+            }
     elif skill_name == "idea-debate":
         from services.idea_debate import clear_debate_hints, latest_speeches, prepare_debate
         clear_debate_hints(session_id)
@@ -241,6 +268,8 @@ async def chat(request: Request, session_id: str, req: ChatRequest, user_id: str
                 yield f"event: message\ndata: {json.dumps({'delta': text}, ensure_ascii=False)}\n\n"
                 yield "event: done\ndata: {\"message\": \"完成\"}\n\n"
                 return
+            if lit_payload:
+                yield f"event: literature\ndata: {json.dumps(lit_payload, ensure_ascii=False)}\n\n"
             if lit_text:
                 source = _static_reply(lit_text)
             elif debate_job is not None and not debate_job.get("ok"):
@@ -274,11 +303,32 @@ async def chat(request: Request, session_id: str, req: ChatRequest, user_id: str
                     opened = await workspace_manager.get_content(session_id, req.open_path or "", user_id)
                     if opened:
                         excerpt, total = clip_open_excerpt(opened)
+                # 辩手带的参考材料：每篇最多 3000 字，合计 9000 字；读取走 get_content，扫描件自动走 OCR 缓存
+                materials_text = ""
+                if req.debate_materials:
+                    from services.workspace_manager import workspace_manager as _wm
+                    parts: list[str] = []
+                    used = 0
+                    for mat in req.debate_materials[:4]:
+                        try:
+                            body = await _wm.get_content(session_id, mat.path, user_id, mat.source or "site")
+                        except Exception:
+                            body = None
+                        if not body:
+                            continue
+                        clip = body[: max(0, min(3000, 9000 - used))]
+                        if not clip:
+                            break
+                        used += len(clip)
+                        parts.append(f"[文件: {mat.name}]\n{clip}")
+                    if parts:
+                        materials_text = "\n\n".join(parts)
                 from services.idea_debate import recent_socratic_turns
                 prior_turns = recent_socratic_turns(stored_messages) if mode_name == "socratic" else ""
                 source = stream_debate(
                     mode_name, req.message, debate_job.get("models") or [],
                     debate_keys, debate_bases, cancel_event, session_id, excerpt, total, prior_turns,
+                    max_rounds=req.debate_rounds, materials_text=materials_text,
                 )
             else:
                 source = claude.chat(
@@ -337,6 +387,8 @@ async def chat(request: Request, session_id: str, req: ChatRequest, user_id: str
                 assistant_meta_obj["debate"] = {"voices": debate_voices}
             if debate_plan and not saw_error:
                 assistant_meta_obj["debate_plan"] = debate_plan
+            if lit_payload and not saw_error:
+                assistant_meta_obj["literature"] = lit_payload
             assistant_meta = json.dumps(assistant_meta_obj, ensure_ascii=False)
             try:
                 if full:

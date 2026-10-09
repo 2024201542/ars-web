@@ -3,19 +3,19 @@ import { ref } from 'vue'
 import { api } from '@/api'
 import type { WorkspaceFile } from '@/types'
 
-type RootInfo = { source?: 'site' | 'local'; label?: string; path?: string; truncated?: boolean }
+type RootInfo = { source?: 'site' | 'local' | 'none'; label?: string; path?: string; truncated?: boolean }
 
 export const useWorkspaceStore = defineStore('workspace', () => {
   const files = ref<WorkspaceFile[]>([])
   const loading = ref(false)
-  const source = ref<'site' | 'local'>('site')
+  const source = ref<'site' | 'local' | 'none'>('none')
   const rootLabel = ref('项目文件')
   const rootPath = ref('')
   const truncated = ref(false)
 
   function apply(data: { data?: WorkspaceFile[]; root?: RootInfo } | null) {
     files.value = data?.data || []
-    source.value = data?.root?.source === 'local' ? 'local' : 'site'
+    source.value = data?.root?.source === 'local' ? 'local' : data?.root?.source === 'site' ? 'site' : 'none'
     rootLabel.value = data?.root?.label || '项目文件'
     rootPath.value = data?.root?.path || ''
     truncated.value = !!data?.root?.truncated

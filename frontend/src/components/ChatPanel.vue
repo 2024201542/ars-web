@@ -13,6 +13,7 @@ import SkillGuide from './SkillGuide.vue'
 import FileMentionPopup from './FileMentionPopup.vue'
 import MarkdownIt from 'markdown-it'
 import { DIRECT_ENTRIES, FUNCTION_GROUPS, entryButtonLabel } from '@/utils/composerModes'
+import { renderMermaidBlocks } from '@/utils/mermaidBlocks'
 import { ArrowUp, Square, Copy, Check, Loader2, FilePlus, FileText, X, ChevronDown, ChevronRight, ChevronLeft } from 'lucide-vue-next'
 
 const props = defineProps<{
@@ -30,11 +31,48 @@ const pendingStart = usePendingStartStore()
 const workspaceStore = useWorkspaceStore()
 const toast = useToast()
 
-const { isStreaming, resultContent, progressTokens, progressPhase, lastToolUse, statusText, sendMessage: streamSend, abort } =
+const { isStreaming, resultContent, progressTokens, progressPhase, lastToolUse, statusText, liveStream, sendMessage: streamSend, abort } =
   useChatStream(() => props.sessionId, () => emit('done'))
+
+interface LiteraturePaper { doi: string; title: string; year: string; has_pdf: boolean }
+const pickedPapers = ref<Record<number, string[]>>({})
+const savingPapers = ref(false)
+function isPaperPicked(id: number, doi: string) { return (pickedPapers.value[id] || []).includes(doi) }
+function onPaperToggle(id: number, doi: string, event: Event) {
+  togglePaper(id, doi, (event.target as HTMLInputElement).checked)
+}
+function togglePaper(id: number, doi: string, on: boolean) {
+  const next = new Set(pickedPapers.value[id] || [])
+  if (on) next.add(doi)
+  else next.delete(doi)
+  pickedPapers.value = { ...pickedPapers.value, [id]: [...next] }
+}
+async function savePapers(msg: { id: number }) {
+  const dois = pickedPapers.value[msg.id] || []
+  if (!dois.length) {
+    toast.info('先勾选有公开 PDF 的论文')
+    return
+  }
+  savingPapers.value = true
+  try {
+    const result = await api.post<{ saved: { name: string }[]; skipped: { reason: string }[]; message?: string }>('/literature/save', { dois })
+    await workspaceStore.loadFiles(props.sessionId)
+    const names = (result.saved || []).map((item) => item.name).filter(Boolean)
+    if (names.length) toast.success(`已放到左侧：${names.join('、')}`)
+    else toast.info(result.message || '没有放到左侧')
+    if ((result.skipped || []).length) toast.info(`${result.skipped.length} 条没有公开全文或没有下下来`)
+  } catch (err: any) {
+    toast.error(err.message || '没有放到左侧')
+  } finally {
+    savingPapers.value = false
+  }
+}
 
 const inputMessage = ref('')
 const chatContainer = ref<HTMLElement | null>(null)
+watch(() => sessionStore.messages.map((item) => item.content || '').join('\u0001'), () => {
+  nextTick(() => renderMermaidBlocks(chatContainer.value))
+})
 const showScrollBtn = ref(false)
 const copiedId = ref<number | null>(null)
 const selectedIds = ref<Set<number>>(new Set())
@@ -73,6 +111,8 @@ const configuredModels = computed(() => {
 const currentModelName = computed(() => settingsStore.models.find((item) => item.id === settingsStore.selectedModel)?.name || '选择模型')
 const debateIds = ref<string[]>([])
 const debateStances = ref<Record<string, string>>({})
+// 辩论轮数（1-4，默认 2）
+const debateRoundCount = ref(2)
 const extraModels = ref<{ id: string; name: string; provider: string }[]>([])
 const extraName = ref('')
 const extraProvider = ref('')
@@ -140,7 +180,8 @@ function currentSeats() {
       model: id,
       provider: known?.provider || '',
       name: known?.name || id,
-      stance: (debateStances.value[id] || '').trim(),
+      // 立场太长会被后端 422（历史教训：生成式辩题常常超 200 字），这里截断兜底
+      stance: (debateStances.value[id] || '').trim().slice(0, 1800),
     }
   }).filter((item) => item.provider)
 }
@@ -173,6 +214,10 @@ function debateRequest(action?: string, scope?: string, who = ''): DebatePayload
     action: action || undefined,
     seats: currentSeats(),
     summarize_model: action === 'topic' ? (topicModel.value || debateIds.value[0] || '') : undefined,
+    rounds: debateRoundCount.value,
+    materials: topicPicked.value.length
+      ? topicPicked.value.map((f) => ({ name: f.name, path: f.path, source: props.source || '' }))
+      : undefined,
   }
 }
 watch(() => props.modeName, (mode) => {
@@ -517,6 +562,9 @@ const composerPlaceholder = computed(() => {
   if (isStreaming.value && steering.value) return '可以先写下给下一位的方向。发送要等这一轮结束'
   if (isStreaming.value) return '可以先写下一句。这一轮结束前不能发送'
   if (props.skillName === 'idea-debate' && props.modeName === 'socratic') return '写下主题和你的看法，Enter 发送'
+  if (props.skillName === 'literature-find' && props.modeName === 'files') return '输入检索词，Enter 查找公开论文'
+  if (props.skillName === 'literature-find' && props.modeName === 'passage') return '贴一段正在写的文字，Enter 生成检索词并查找'
+  if (props.skillName === 'academic-paper' && props.modeName === 'structure-map') return '点名要画的文稿，或直接发送。只另存结构图，不改原文'
   if (props.skillName === 'literature-find' || (props.skillName === 'academic-paper' && props.modeName === 'lit-search')) return '输入检索词，Enter 发送'
   return '输入研究主题… 用 @ 引用文件，或把文件拖到这里；Enter 发送'
 })
@@ -527,7 +575,14 @@ async function releaseTurn() {
   try {
     await api.debateHint(props.sessionId, text)
     inputMessage.value = ''
-    toast.info(debateHold.value?.between ? (text ? '已带上你的意见，开始下一轮' : '开始下一轮') : '已记下，下一轮会看见')
+    // 本地先放一条气泡，让你马上看见这条指令进了哪；正式生效时会以「流程指令」卡片出现在下一轮
+    if (text) {
+      const author = auth.user?.display_name || auth.user?.username || ''
+      const metadata = author ? JSON.stringify({ author }) : null
+      sessionStore.addMessage({ id: Date.now(), session_id: props.sessionId, role: 'user', content: `【主持人指令】${text}`, agent_name: null, phase_name: null, metadata, created_at: new Date().toISOString() })
+      scrollToBottom(true)
+    }
+    toast.info(debateHold.value?.between ? (text ? '已带上你的指令，开始下一轮' : '开始下一轮') : '已记下，下一轮生效（不会当成论点被反驳）')
   } catch (err: any) {
     toast.error(err.message || '这句提示没有送进去')
   }
@@ -626,6 +681,15 @@ function pipelineState(msg: { pipeline?: { awaiting?: boolean; done?: boolean; l
   }
 }
 
+function literaturePapers(msg: { literature?: { items?: LiteraturePaper[] } | null; metadata?: string | null }): LiteraturePaper[] {
+  const live = msg.literature?.items
+  if (live?.length) return live
+  if (!msg.metadata) return []
+  try {
+    const meta = typeof msg.metadata === 'string' ? JSON.parse(msg.metadata) : msg.metadata
+    return meta?.literature?.items || []
+  } catch { return [] }
+}
 function debateVoices(msg: { debate?: { voices: DebateVoice[] } | null; metadata?: string | null }): DebateVoice[] {
   if (msg.debate?.voices?.length) return msg.debate.voices
   if (!msg.metadata) return []
@@ -649,7 +713,7 @@ function debatePlanOf(msg: { debatePlan?: DebatePlan | null; metadata?: string |
 }
 
 function speechVoices(msg: { debate?: { voices: DebateVoice[] } | null; metadata?: string | null }) {
-  return debateVoices(msg).filter((item) => item.kind !== 'summary' && item.kind !== 'judge')
+  return debateVoices(msg).filter((item) => item.kind !== 'summary' && item.kind !== 'judge' && item.kind !== 'host')
 }
 
 function speakers(msg: { debate?: { voices: DebateVoice[] } | null; metadata?: string | null }) {
@@ -674,7 +738,8 @@ function isLatestDebate(msg: { id: number }) {
 function voiceKind(voice: DebateVoice) {
   if (voice.kind === 'judge') return '法官'
   if (voice.kind === 'summary') return '总结'
-  if (voice.round === 2) return '回应'
+  if (voice.kind === 'host') return '流程指令'
+  if (voice.round && voice.round > 1) return '回应'
   return '发言'
 }
 
@@ -782,10 +847,72 @@ async function doSend(msg: string) {
   }
 }
 
+// 生成辩题时把输入框里的附件一并读进来：只给文件名模型看不到观点，必须给正文。
+// 单篇截断 + 总量上限，避免把两篇长论文整篇塞进一次请求。
+const TOPIC_FILE_CHARS = 8000
+const TOPIC_TOTAL_CHARS = 16000
+
+// 辩题面板里直接挑文件（不必先 @ 到输入框）
+const topicPicker = ref(false)
+const topicPicked = ref<{ name: string; path: string; is_dir?: boolean }[]>([])
+
+const topicPickable = computed(() =>
+  (workspaceStore.files || []).filter((f: any) => !f.is_dir).slice(0, 300))
+
+function toggleTopicFile(f: any) {
+  const list = topicPicked.value
+  const idx = list.findIndex((x) => x.path === f.path)
+  if (idx >= 0) topicPicked.value = list.filter((_, i) => i !== idx)
+  else if (list.length < 4) topicPicked.value = [...list, { name: f.name, path: f.path, is_dir: !!f.is_dir }]
+  else toast.info('一次最多挑 4 个文件')
+}
+
+function isTopicPicked(path: string) {
+  return topicPicked.value.some((x) => x.path === path)
+}
+
+function clipTopicExcerpt(text: string, limit = TOPIC_FILE_CHARS) {
+  const raw = text || ''
+  return raw.length <= limit ? raw : raw.slice(0, limit) + `\n…（以下省略，原文共 ${raw.length} 字）`
+}
+
+async function collectTopicMaterials(): Promise<{ blocks: string[]; names: string[] }> {
+  // 面板里挑的 + 输入框里 @ 的，按路径去重
+  const merged: any[] = []
+  const seen = new Set<string>()
+  for (const f of [...topicPicked.value, ...(attachedFiles.value as any[])]) {
+    const key = String(f.path || f.name)
+    if (seen.has(key)) continue
+    seen.add(key)
+    merged.push(f)
+  }
+
+  const blocks: string[] = []
+  const names: string[] = []
+  let used = 0
+  for (const f of merged) {
+    if (f.is_dir) { names.push(f.path); continue }
+    let body = ''
+    try {
+      const r = await api.getFileContent(props.sessionId, f.path, props.source)
+      body = clipTopicExcerpt(r.content, Math.min(TOPIC_FILE_CHARS, Math.max(0, TOPIC_TOTAL_CHARS - used)))
+    } catch {
+      toast.info(`读不到「${f.name}」，这次生成只用文字`)
+      continue
+    }
+    used += body.length
+    blocks.push(`[文件: ${f.name}]\n${body}`)
+    names.push(f.name)
+    if (used >= TOPIC_TOTAL_CHARS) break
+  }
+  return { blocks, names }
+}
+
 async function draftTopic() {
-  const text = topicSeed.value.trim() || inputMessage.value.trim()
-  if (!text) {
-    toast.info('先在下面写下你的看法')
+  const seed = topicSeed.value.trim() || inputMessage.value.trim()
+  const materials = await collectTopicMaterials()
+  if (!seed && !materials.blocks.length) {
+    toast.info('先在下面写下你的看法，或在输入框里 @ 上要参考的文章')
     return
   }
   if (debateIds.value.length < 2) {
@@ -793,7 +920,20 @@ async function draftTopic() {
     return
   }
   if (sendingLock.value || isStreaming.value || !settingsStore.isConfigured) return
-  await postDebate(text, text, debateRequest('topic'))
+
+  const parts: string[] = []
+  if (materials.blocks.length) {
+    parts.push(
+      '以下是写作者提供的文章，请据此归纳各方的观点，不要凭空编造：\n\n'
+      + materials.blocks.join('\n\n'),
+    )
+  }
+  if (seed) parts.push(`写作者的补充看法：\n${seed}`)
+  const payload = parts.join('\n\n---\n\n')
+
+  const label = materials.names.length ? `📎 ${materials.names.join(' ')}` : ''
+  topicSeed.value = ''
+  await postDebate(label ? `${label}\n${seed}` : seed, payload, debateRequest('topic'))
 }
 
 function debateRounds(msg: { debate?: { voices: DebateVoice[] } | null; metadata?: string | null }) {
@@ -938,6 +1078,14 @@ function renderMarkdown(t: string) { return t ? md.render(t) : '' }
               <div v-else class="h-full w-2/5 bg-ruc-red/80 rounded-full ars-indet" />
             </div>
           </div>
+          <div v-if="msg.role === 'assistant' && literaturePapers(msg).length" class="mt-2 space-y-1">
+            <p class="text-[10px] font-ui text-ruc-text-dim">选择要放到左侧的论文</p>
+            <label v-for="(paper, paperIndex) in literaturePapers(msg)" :key="(paper.doi || paper.title) + paperIndex" class="flex items-start gap-1.5 text-[11px] font-ui text-ruc-text">
+              <input type="checkbox" class="mt-0.5 accent-ruc-red" :disabled="!paper.has_pdf || !paper.doi || savingPapers" :checked="isPaperPicked(msg.id, paper.doi)" @change="onPaperToggle(msg.id, paper.doi, $event)" />
+              <span class="min-w-0 leading-relaxed">{{ paper.title || '（无题名）' }}<span class="text-ruc-text-light">{{ paper.has_pdf ? ' · 公开 PDF' : ' · 没有公开全文' }}</span></span>
+            </label>
+            <button type="button" class="px-2 py-1 rounded-md bg-ruc-red text-white text-[11px] font-ui disabled:opacity-50" :disabled="savingPapers" @click="savePapers(msg)">{{ savingPapers ? '正在放入…' : '放到左侧文件' }}</button>
+          </div>
           <div v-if="msg.role === 'assistant' && speakers(msg).length" class="mt-2 text-[11px] font-ui text-ruc-text-dim leading-relaxed">
             <span v-for="(item, rosterIndex) in speakers(msg)" :key="'roster-' + item.model">{{ rosterIndex ? '；' : '' }}{{ item.name }}<template v-if="item.stance">：{{ item.stance }}</template></span>
           </div>
@@ -965,7 +1113,25 @@ function renderMarkdown(t: string) { return t ? md.render(t) : '' }
           <div v-if="msg.role === 'assistant' && debatePlanOf(msg)" class="mt-2 rounded-xl border border-ruc-divider bg-ruc-warm px-3 py-2">
             <p class="text-[11px] font-ui text-ruc-text">辩题：{{ debatePlanOf(msg)?.topic }}</p>
             <p v-for="(stance, id) in (debatePlanOf(msg)?.stances || {})" :key="'plan-' + id" class="mt-1 text-[11px] font-ui text-ruc-text-dim">{{ seatOf(String(id))?.name || id }}：{{ stance }}</p>
+            <p v-if="topicPicked.length" class="mt-1 text-[10px] font-ui text-ruc-text-light">开辩时会带上材料：{{ topicPicked.map((f) => f.name).join('、') }}（各取节选）</p>
             <button type="button" class="mt-1 text-[11px] font-ui text-ruc-red" @click="applyPlan(debatePlanOf(msg)!)">填进输入框</button>
+          </div>
+          <!-- 正在写的那一段：逐字增长，写完由上面的完整卡片接替 -->
+          <div v-if="liveStream && msg.role === 'assistant' && isLatestDebate(msg)" class="mt-2 rounded-xl border border-ruc-red/30 bg-ruc-red-pale/40 px-3 py-2">
+            <p class="text-[11px] font-ui text-ruc-red">
+              <template v-if="liveStream.kind === 'topic'">正在拟辩题</template>
+              <template v-else>{{ liveStream.name || '辩手' }} 正在写<template v-if="liveStream.round > 1">（第 {{ liveStream.round }} 轮）</template></template>
+              <span class="text-ruc-text-light"> · 逐字输出中</span>
+            </p>
+            <template v-if="liveStream.thinking">
+              <p class="mt-1 text-[10px] font-ui text-ruc-text-light">思考</p>
+              <p class="text-xs font-ui text-ruc-text-dim whitespace-pre-wrap leading-relaxed">{{ liveStream.thinking }}</p>
+            </template>
+            <template v-if="liveStream.answer">
+              <p class="mt-1 text-[10px] font-ui text-ruc-text-light">结果</p>
+              <p class="text-xs font-ui text-ruc-text whitespace-pre-wrap leading-relaxed">{{ liveStream.answer }}</p>
+            </template>
+            <p v-if="!liveStream.thinking && !liveStream.answer" class="mt-1 text-xs font-ui text-ruc-text-light">正在连接模型…</p>
           </div>
           <div v-if="props.skillName === 'idea-debate' && props.modeName === 'contrast' && !msg._streaming && !isStreaming && isLatestDebate(msg)" class="mt-2 space-y-2">
             <div>
@@ -1095,8 +1261,11 @@ function renderMarkdown(t: string) { return t ? md.render(t) : '' }
       <div v-else-if="dropping" class="flex items-center gap-2 mb-2 text-xs font-ui text-ruc-text-dim"><Loader2 class="w-3 h-3 animate-spin text-ruc-red/60" />正在加入文件…</div>
       <div ref="composerBar" class="relative rounded-2xl border bg-white transition-all duration-150" :class="isCharLimitExceeded ? 'border-ruc-error/50 ring-2 ring-ruc-error/20' : 'border-ruc-border focus-within:border-ruc-red/40 focus-within:ring-2 focus-within:ring-ruc-red/15'">
         <p v-if="props.skillName === 'idea-debate' && props.modeName === 'socratic'" class="px-4 pt-2 text-[11px] font-ui text-ruc-text-dim leading-relaxed">写下主题和你的看法。它会用一问一答引导你思考，一次只问一个问题。你回答之后，再接着问下一句。</p>
+        <p v-else-if="props.skillName === 'literature-find' && props.modeName === 'files'" class="px-4 pt-2 text-[11px] font-ui text-ruc-text-dim leading-relaxed">输入检索词。列出题名、作者、年份、来源和 DOI，并标出公开 PDF。勾选后放到左侧文件夹。没有公开全文的留空，不会下载收费论文。</p>
+        <p v-else-if="props.skillName === 'literature-find' && props.modeName === 'passage'" class="px-4 pt-2 text-[11px] font-ui text-ruc-text-dim leading-relaxed">贴一段正在写的文字。当前模型先拟出检索词，再向 OpenAlex 检索。列出题名、作者、年份、来源和 DOI。缺的留空，不会编造文献。</p>
         <p v-else-if="props.skillName === 'literature-find'" class="px-4 pt-2 text-[11px] font-ui text-ruc-text-dim leading-relaxed">输入检索词。结果来自 OpenAlex，列出题名、作者、年份、来源和 DOI。缺的留空。关键词检索受限时，先用 Crossref 定位 DOI，再向 OpenAlex 读取。知网还没接通，不会编造文献。</p>
         <p v-else-if="props.skillName === 'academic-paper' && props.modeName === 'lit-search'" class="px-4 pt-2 text-[11px] font-ui text-ruc-text-dim leading-relaxed">这里仍是知网接口，还没接通，只会记下检索词。开放检索在「文献查找」里。</p>
+        <p v-else-if="props.skillName === 'academic-paper' && props.modeName === 'structure-map'" class="px-4 pt-2 text-[11px] font-ui text-ruc-text-dim leading-relaxed">按文件夹里已有的大纲或正文画结构图，另存为「论文结构图.html」。不改原来的文稿。全流程会在大纲确认后自动做这一步。格式转换仍是改引用格式，不画图。</p>
         <textarea ref="textareaRef" v-model="inputMessage" @keydown="handleKeydown" @input="onTextareaInput" :disabled="dropping" :placeholder="composerPlaceholder" rows="1" class="w-full resize-none font-ui text-sm bg-transparent border-0 px-4 pt-3 pb-1 placeholder:text-ruc-text-light focus:outline-none disabled:text-ruc-text-light" style="min-height:44px;max-height:160px" />
         <FileMentionPopup v-if="showMention" ref="mentionPopupRef" :session-id="sessionId" :query="mentionQuery" @select="onFileSelect" @close="showMention=false" />
         <div class="flex items-center gap-1 px-2 pb-2">
@@ -1182,8 +1351,43 @@ function renderMarkdown(t: string) { return t ? md.render(t) : '' }
               </div>
               <div v-if="props.modeName === 'contrast'" class="mt-2">
                 <p class="text-[10px] font-ui text-ruc-text-light mb-1">辩题可以自己写在输入框里直接发。要自动生成，先点选上面要辩论的模型，把看法写在下面。生成后可以自己给每位分配不同辩题。</p>
-                <textarea v-model="topicSeed" rows="2" placeholder="你的看法" class="mb-1 w-full resize-none rounded-md border border-ruc-divider px-2 py-1 text-[11px] font-ui text-ruc-text"></textarea>
+                <p v-if="topicPicked.length || attachedFiles.length" class="mb-1 text-[10px] font-ui text-ruc-text">
+                  会读这些文件来定观点：{{ [...topicPicked, ...attachedFiles].map((f: any) => f.name).filter((n, i, a) => a.indexOf(n) === i).join('、') }}
+                </p>
+                <p v-else class="mb-1 text-[10px] font-ui text-ruc-text-light">
+                  想按文章观点定辩题，先在下面「选文章」，或在输入框用 @ 选（可多选）。
+                </p>
+                <div class="mb-1">
+                  <button type="button" class="px-2 py-1 rounded-md border border-ruc-divider text-[11px] font-ui text-ruc-text hover:border-ruc-red/40" @click="topicPicker = !topicPicker; if (topicPicker) workspaceStore.loadFiles(props.sessionId)">
+                    {{ topicPicked.length ? `已选 ${topicPicked.length} 篇` : '选文章' }}
+                  </button>
+                  <button v-if="topicPicked.length" type="button" class="ml-1 text-[10px] font-ui text-ruc-text-light" @click="topicPicked = []">清空</button>
+                </div>
+                <div v-if="topicPicker" class="mb-1 max-h-40 overflow-y-auto rounded-md border border-ruc-divider bg-white p-1">
+                  <p v-if="workspaceStore.loading" class="p-1 text-[10px] font-ui text-ruc-text-light">正在读文件夹…</p>
+                  <p v-else-if="!topicPickable.length" class="p-1 text-[10px] font-ui text-ruc-text-light">
+                    左侧还没有文件。先在左侧打开文件夹或上传文章。
+                  </p>
+                  <button
+                    v-for="f in topicPickable"
+                    :key="'tp-' + f.path"
+                    type="button"
+                    class="flex w-full items-center gap-1 rounded px-1 py-0.5 text-left text-[11px] font-ui hover:bg-ruc-warm"
+                    :class="isTopicPicked(f.path) ? 'text-ruc-red' : 'text-ruc-text'"
+                    @click="toggleTopicFile(f)"
+                  >
+                    <span class="w-3 flex-shrink-0">{{ isTopicPicked(f.path) ? '✓' : '' }}</span>
+                    <span class="truncate">{{ f.name }}</span>
+                  </button>
+                </div>
+                <textarea v-model="topicSeed" rows="2" placeholder="你的看法，或希望怎么分观点" class="mb-1 w-full resize-none rounded-md border border-ruc-divider px-2 py-1 text-[11px] font-ui text-ruc-text"></textarea>
                 <div class="flex flex-wrap items-center gap-1">
+                  <select v-model.number="debateRoundCount" class="rounded-md border border-ruc-divider bg-white px-1.5 py-1 text-[11px] font-ui text-ruc-text" title="辩论轮数">
+                    <option :value="1">1 轮</option>
+                    <option :value="2">2 轮</option>
+                    <option :value="3">3 轮</option>
+                    <option :value="4">4 轮</option>
+                  </select>
                   <select v-model="topicModel" class="max-w-[140px] rounded-md border border-ruc-divider bg-white px-1.5 py-1 text-[11px] font-ui text-ruc-text">
                     <option value="">用第一位拟辩题</option>
                     <option v-for="item in seatChoices" :key="'topic-' + item.id" :value="item.id">{{ item.name }}</option>

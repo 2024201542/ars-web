@@ -8,7 +8,13 @@ class DebateSeat(BaseModel):
     model: str = Field(..., max_length=80)
     provider: str = Field("", max_length=40)
     name: str = Field("", max_length=40)
-    stance: str = Field("", max_length=200)
+    stance: str = Field("", max_length=2000)
+
+
+class DebateMaterial(BaseModel):
+    name: str = Field(..., max_length=200)
+    path: str = Field(..., max_length=400)
+    source: str = Field("", max_length=10)
 
 
 class ChatRequest(BaseModel):
@@ -23,6 +29,8 @@ class ChatRequest(BaseModel):
     summarize_scope: str = Field("", max_length=20)
     summarize_pair: list[str] = Field(default_factory=list, max_length=2)
     summarize_rounds: list[int] = Field(default_factory=list, max_length=8)
+    debate_rounds: int = Field(2, ge=1, le=4)
+    debate_materials: list[DebateMaterial] = Field(default_factory=list, max_length=4)
 
 
 class Message(BaseModel):

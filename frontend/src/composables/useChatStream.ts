@@ -13,6 +13,8 @@ export function useChatStream(getSessionId: () => string, emitDone: () => void) 
   const progressTokens = ref(0)
   const progressPhase = ref('')
   const lastToolUse = ref('')
+  // 辩论/辩题的实时流：模型正在写的那一段（逐字追加），结束后清空
+  const liveStream = ref<{ key: string; kind: string; name: string; round: number; thinking: string; answer: string } | null>(null)
 
   const statusText = computed(() => {
     if (lastToolUse.value) return `正在使用工具：${lastToolUse.value}`
@@ -57,7 +59,17 @@ export function useChatStream(getSessionId: () => string, emitDone: () => void) 
     let last = Date.now()
     try {
       const r = await api.chatSSE(getSessionId(), msg, modelToUse, openPath, pipelineAction, debateModels, debate)
-      if (!r.ok) { const e = await r.json().catch(()=>({detail:`${r.status}`})); throw new Error(e.detail||'请求失败') }
+      if (!r.ok) {
+        const e = await r.json().catch(()=>({detail:`${r.status}`}))
+        // FastAPI 校验失败时 detail 是对象数组，直接拼接会变成 [object Object]
+        const detail = Array.isArray(e.detail)
+          ? e.detail.map((x: any) => {
+              const where = Array.isArray(x?.loc) ? x.loc.filter((p: any) => p !== 'body').join('.') : ''
+              return where ? `${where}: ${x?.msg || ''}` : (x?.msg || JSON.stringify(x))
+            }).join('；')
+          : (e.detail || '请求失败')
+        throw new Error(detail)
+      }
       if (!r.body) throw new Error('无响应流')
       const rd = r.body.getReader(); const dc = new TextDecoder()
       let buf = ''; const pen = { evt: '', dat: '' }
@@ -72,9 +84,42 @@ export function useChatStream(getSessionId: () => string, emitDone: () => void) 
         else if (pen.evt === 'files_changed' && l) { l.edits = d }
         else if (pen.evt === 'pipeline' && l) { l.pipeline = d }
         else if (pen.evt === 'debate_topic' && l) { l.debatePlan = d }
+        else if (pen.evt === 'literature' && l) { l.literature = d }
         else if (pen.evt === 'debate_pause' && l) { l.debateHold = d }
+        else if (pen.evt === 'debate_stream') {
+          // 这一位开始/结束写了；开始就先把空卡片挂出来，好让用户看到逐字增长
+          if (d?.stage === 'start') {
+            liveStream.value = {
+              key: String(d.kind || 'speech') + '-' + String(d.model || d.name || '') + '-' + String(d.round || 1),
+              kind: String(d.kind || 'speech'),
+              name: String(d.name || ''),
+              round: Number(d.round || 1),
+              thinking: '',
+              answer: '',
+            }
+          } else if (d?.stage === 'end') {
+            // 完整卡片由随后的 debate_voice 事件覆盖，这里先留住内容避免闪烁
+          }
+        }
+        else if (pen.evt === 'debate_delta') {
+          const part = String(d?.part || 'answer')
+          if (!liveStream.value) {
+            liveStream.value = {
+              key: String(d?.kind || 'speech') + '-' + String(d?.model || '') + '-' + String(d?.round || 1),
+              kind: String(d?.kind || 'speech'),
+              name: '',
+              round: Number(d?.round || 1),
+              thinking: '',
+              answer: '',
+            }
+          }
+          const cur = liveStream.value
+          if (part === 'thinking') cur.thinking += String(d?.delta || '')
+          else cur.answer += String(d?.delta || '')
+        }
         else if (pen.evt === 'debate_voice' && l) {
           l.debateHold = null
+          liveStream.value = null
           const voices: DebateVoice[] = [...(l.debate?.voices || [])]
           const incoming = d as DebateVoice
           if (incoming.kind === 'summary' || incoming.kind === 'judge') voices.push(incoming)
@@ -119,5 +164,5 @@ export function useChatStream(getSessionId: () => string, emitDone: () => void) 
     finally { isStreaming.value = false; emitDone() }
   }
 
-  return { isStreaming, resultContent, progressTokens, progressPhase, lastToolUse, statusText, sendMessage, abort: ()=> { isStreaming.value = false } }
+  return { isStreaming, resultContent, progressTokens, progressPhase, lastToolUse, statusText, liveStream, sendMessage, abort: ()=> { isStreaming.value = false } }
 }

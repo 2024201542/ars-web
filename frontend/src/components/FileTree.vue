@@ -150,7 +150,7 @@ async function doUpload(e: Event) {
   const input = e.target as HTMLInputElement
   const f = input.files?.[0]
   input.value = ''
-  if (!f) return
+  if (!f || needFolder()) return
   uploading.value = true
   try {
     await uploadOne(f)
@@ -164,7 +164,7 @@ async function doUpload(e: Event) {
 
 async function onTreeDrop(e: DragEvent) {
   const files = Array.from(e.dataTransfer?.files || [])
-  if (!files.length) return
+  if (!files.length || needFolder()) return
   e.preventDefault()
   uploading.value = true
   try {
@@ -195,15 +195,10 @@ async function pickFolder() {
   }
 }
 
-async function backToSite() {
-  if (props.beforeLeave && !(await props.beforeLeave())) return
-  try {
-    await store.closeFolder(props.sessionId)
-    activeDir.value = ''
-    toast.success('已回到网站项目')
-  } catch (ex: any) {
-    toast.error(ex.message || '切换失败')
-  }
+function needFolder() {
+  if (store.source === 'local') return false
+  toast.info('先选择一个文件夹。对话留在这个账号里。')
+  return true
 }
 
 function parentDir(path: string) {
@@ -230,7 +225,7 @@ function selectDir(path: string) {
 
 async function createDir(where: 'inside' | 'sibling' = 'sibling') {
   const name = dirName.value.trim()
-  if (!name || creating.value) return
+  if (!name || creating.value || needFolder()) return
   creating.value = true
   try {
     const directory = placeDirectory(where)
@@ -263,7 +258,7 @@ function openDirMenu() {
 }
 
 async function createKind(kind: string) {
-  if (creating.value) return
+  if (creating.value || needFolder()) return
   newMenu.value = false
   creating.value = true
   try {
@@ -350,7 +345,7 @@ function onFileDragStart(e: DragEvent, file: any) {
         <FolderTree class="w-4 h-4" />
       </button>
       <span class="text-[10px] font-ui text-ruc-text-light writing-vertical">{{ fileCount }}</span>
-      <button class="text-ruc-text-light hover:text-ruc-red transition-colors p-1" title="打开本机文件夹" @click="pickFolder">
+      <button class="text-ruc-text-light hover:text-ruc-red transition-colors p-1" title="选择文件夹" @click="pickFolder">
         <FolderOpen class="w-3.5 h-3.5" />
       </button>
       <label class="cursor-pointer text-ruc-text-light hover:text-ruc-red transition-colors p-1" title="上传文件，含 Word（.docx）">
@@ -382,7 +377,7 @@ function onFileDragStart(e: DragEvent, file: any) {
         >
           {{ store.rootLabel || '项目文件' }}
         </button>
-        <button class="p-1 flex-shrink-0 text-ruc-text-dim hover:text-ruc-red rounded transition-colors" title="从电脑打开文件夹" @click="pickFolder">
+        <button class="p-1 flex-shrink-0 text-ruc-text-dim hover:text-ruc-red rounded transition-colors" title="选择文件夹" @click="pickFolder">
           <Loader2 v-if="picking" class="w-3.5 h-3.5 animate-spin" />
           <FolderOpen v-else class="w-3.5 h-3.5" />
         </button>
@@ -519,15 +514,11 @@ function onFileDragStart(e: DragEvent, file: any) {
 
       <div v-if="tree.children.length === 0 && !store.loading" class="px-3 py-8 text-center">
         <File class="w-6 h-6 mx-auto text-ruc-border mb-2" />
-        <p class="text-ruc-text-light text-xs">打开本机文件夹，或新建一份文稿</p>
+        <p class="text-ruc-text-light text-xs">先选择一个文件夹。对话留在这个账号里，文件放在这个文件夹里。</p>
       </div>
     </div>
 
     <!-- Footer -->
-    <div v-if="store.source === 'local'" class="px-3 py-1 border-t border-ruc-divider flex-shrink-0">
-      <button class="text-[10px] font-ui text-ruc-red hover:underline" @click="backToSite">回到网站项目</button>
-      <p class="text-[10px] text-ruc-text-light leading-snug">这个文件夹只在这台电脑上。要和同事一起改，请回到网站项目。</p>
-    </div>
     <div class="px-3 py-1.5 border-t border-ruc-divider flex-shrink-0 flex items-center justify-between">
       <span class="text-[10px] text-ruc-text-light font-ui">{{ fileCount }} 个文件</span>
       <span v-if="store.truncated" class="text-[10px] text-ruc-text-light font-ui">只列出一部分</span>

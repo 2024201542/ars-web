@@ -45,6 +45,14 @@ def test_mode_instruction_is_one_line():
     assert mode_instruction("agent", "agent") == ""
 
 
+def test_structure_map_draws_without_editing():
+    line = mode_instruction("academic-paper", "structure-map")
+    assert "论文结构图.html" in line
+    assert "不要改" in line
+    assert "不要用图片" in line
+    assert "\n" not in line
+
+
 def test_snapshot_diff_and_restore(tmp_path, monkeypatch):
     import services.edit_snapshot as snap
 

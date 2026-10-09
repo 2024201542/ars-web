@@ -10,6 +10,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from slowapi.middleware import SlowAPIMiddleware
 
 from deps import limiter
@@ -112,3 +113,9 @@ app.include_router(admin.router)
 async def health_check():
     """健康检查接口。"""
     return {"status": "ok", "version": "1.0.0"}
+
+
+# 单进程托管前端：构建产物存在时挂载在 /app（避免与 /api 路由冲突）
+_frontend_dist = pathlib.Path(__file__).resolve().parent.parent / "frontend" / "dist"
+if _frontend_dist.is_dir():
+    app.mount("/app", StaticFiles(directory=str(_frontend_dist), html=True), name="frontend")

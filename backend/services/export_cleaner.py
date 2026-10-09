@@ -1,11 +1,14 @@
 """导出文件定时清理服务"""
 
 import asyncio
+import os
 import pathlib
 import time
 from typing import Optional
 
-EXPORT_DIR = pathlib.Path(__file__).parent.parent / "data" / "exports"
+EXPORT_DIR = pathlib.Path(
+    os.environ.get("ARS_EXPORT_DIR", str(pathlib.Path(__file__).parent.parent / "data" / "exports"))
+)
 MAX_AGE_SECONDS = 24 * 3600  # 24 小时后清理
 CLEANUP_INTERVAL = 3600       # 每小时检查一次
 

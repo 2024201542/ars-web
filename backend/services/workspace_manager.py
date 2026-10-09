@@ -33,6 +33,7 @@ ALLOWED_FILE_EXTS = {
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
 LOCAL_PROJECT_KEY = "local_project_path"
 SKIP_DIRS = {"node_modules", ".git", "__pycache__", ".venv", "venv", "dist", ".idea"}
+SKIP_FILE_NAMES = {"desktop.ini"}
 MAX_LISTED_FILES = 800
 FILE_KINDS = {
     "draft": ("文稿.md", "# 文稿\n\n"),
@@ -312,15 +313,25 @@ class WorkspaceManager:
             except Exception:
                 return None
 
-        # PDF → 尝试 pdftotext（如有则用），否则返回提示
+        # PDF → 先取文字层；扫描件（没有文字层）走 OCR，结果逐页缓存
         if ext == ".pdf":
             try:
-                import subprocess
-                r = subprocess.run(["pdftotext", str(file), "-"], capture_output=True, text=True, timeout=30)
-                if r.returncode == 0:
-                    return r.stdout
-            except Exception:
-                pass
+                from services import pdf_ocr
+
+                result = await asyncio.to_thread(pdf_ocr.extract_text, file)
+                text = (result.get("text") or "").strip()
+                if not text:
+                    return None
+                if result.get("source") in ("ocr", "ocr-partial"):
+                    done = len(result.get("ocr_pages") or [])
+                    total = result.get("total_pages") or done
+                    head = f"[这份 PDF 是扫描件，正文由 OCR 识别，已识别前 {done}/{total} 页]"
+                    if result.get("pending_pages"):
+                        head += "\n[后面的页正在后台识别，稍后再读一次就能拿到更多]"
+                    return f"{head}\n\n{text}"
+                return text
+            except Exception as exc:
+                logger.warning("PDF 文本提取失败 %s: %s", file, exc)
             return None
 
         # XLSX → openpyxl 提取为 CSV-like 文本
@@ -378,6 +389,7 @@ class WorkspaceManager:
         return candidate
 
     async def get_local_root(self, user_id: str) -> Optional[Path]:
+        """账号里记住的那个文件夹。没选过就不打开任何目录。"""
         raw = await state_tracker.get_setting(LOCAL_PROJECT_KEY, user_id)
         if not raw or not str(raw).strip():
             return None
@@ -413,14 +425,17 @@ class WorkspaceManager:
             entries = sorted(root.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower()))
         except (PermissionError, OSError):
             return False
+        directories = []
         for entry in entries:
             if len(files) >= MAX_LISTED_FILES:
                 return True
             if entry.name.startswith(".") or entry.name in SKIP_DIRS or entry.is_symlink():
                 continue
+            if entry.name.lower() in SKIP_FILE_NAMES or entry.suffix.lower() == ".lnk":
+                continue
+            rel = str(entry.relative_to(base)).replace("\\", "/")
+            parent = "" if entry.parent == base else str(entry.parent.relative_to(base)).replace("\\", "/")
             if entry.is_dir():
-                rel = str(entry.relative_to(base)).replace("\\", "/")
-                parent = "" if entry.parent == base else str(entry.parent.relative_to(base)).replace("\\", "/")
                 files.append({
                     "id": uuid.uuid4().hex[:12],
                     "name": entry.name,
@@ -431,8 +446,7 @@ class WorkspaceManager:
                     "dir": parent,
                     "is_dir": True,
                 })
-                if self._scan_limited(base, entry, files, depth + 1):
-                    truncated = True
+                directories.append(entry)
                 continue
             if not entry.is_file():
                 continue
@@ -440,8 +454,6 @@ class WorkspaceManager:
                 stat = entry.stat()
             except OSError:
                 continue
-            rel = str(entry.relative_to(base)).replace("\\", "/")
-            parent = "" if entry.parent == base else str(entry.parent.relative_to(base)).replace("\\", "/")
             files.append({
                 "id": uuid.uuid4().hex[:12],
                 "name": entry.name,
@@ -451,6 +463,11 @@ class WorkspaceManager:
                 "ext": entry.suffix.lower(),
                 "dir": parent,
             })
+        for entry in directories:
+            if len(files) >= MAX_LISTED_FILES:
+                return True
+            if self._scan_limited(base, entry, files, depth + 1):
+                truncated = True
         return truncated
 
     async def list_active(self, user_id: str) -> dict:
@@ -463,8 +480,8 @@ class WorkspaceManager:
                 "root": {"source": "local", "label": root.name, "path": str(root), "truncated": truncated},
             }
         return {
-            "data": await self.list_user_files(user_id),
-            "root": {"source": "site", "label": "项目文件", "path": "", "truncated": False},
+            "data": [],
+            "root": {"source": "none", "label": "选择文件夹", "path": "", "truncated": False},
         }
 
     async def resolve_file(self, user_id: str, rel: str, source: str = "site") -> Optional[Path]:

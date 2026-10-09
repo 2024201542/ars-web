@@ -9,10 +9,11 @@ import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query, UploadFile, File, Form, Depends
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
 from services.edit_snapshot import restore_backup
+from services.pdf_preview import pdf_page_count, render_pdf_page
 from services.workspace_manager import user_dir, workspace_manager
 from services.user_manager import get_user_id
 from services.state_tracker import tracker as state_tracker
@@ -222,7 +223,7 @@ async def preview_file(
     source: str = Query("site"),
     user_id: str = Depends(get_user_id),
 ):
-    """DOCX/XLSX → HTML 转换预览。"""
+    """DOCX/XLSX 转成 HTML。PDF 由单独的页面图接口打开。"""
     await _verify_session(session_id, user_id)
     fp = await workspace_manager.resolve_file(user_id, path, source)
     if not fp:
@@ -265,6 +266,85 @@ async def preview_file(
             raise HTTPException(status_code=500, detail=f"Excel 转换失败: {e}")
 
     raise HTTPException(status_code=406, detail=f"不支持预览: {ext}")
+
+
+@router.get("/files/pdf")
+async def open_pdf_file(
+    session_id: str = Query(...),
+    path: str = Query(...),
+    source: str = Query("site"),
+    user_id: str = Depends(get_user_id),
+):
+    """新标签页打开原文件。页面里的预览走页面图，不走浏览器自带阅读器。"""
+    await _verify_session(session_id, user_id)
+    fp = await workspace_manager.resolve_file(user_id, path, source)
+    if not fp or fp.suffix.lower() != ".pdf":
+        raise HTTPException(status_code=404, detail="文件不存在")
+    return FileResponse(
+        path=str(fp),
+        media_type="application/pdf",
+        filename=fp.name,
+        content_disposition_type="inline",
+    )
+
+
+@router.get("/files/pdf-info")
+async def pdf_info(
+    session_id: str = Query(...),
+    path: str = Query(...),
+    source: str = Query("site"),
+    user_id: str = Depends(get_user_id),
+):
+    await _verify_session(session_id, user_id)
+    fp = await workspace_manager.resolve_file(user_id, path, source)
+    if not fp or fp.suffix.lower() != ".pdf":
+        raise HTTPException(status_code=404, detail="文件不存在")
+    try:
+        pages = await asyncio.to_thread(pdf_page_count, fp)
+    except Exception:
+        raise HTTPException(status_code=500, detail="这份 PDF 打不开")
+    return {"pages": pages}
+
+
+@router.get("/files/pdf-ocr")
+async def pdf_ocr_progress(
+    session_id: str = Query(...),
+    path: str = Query(...),
+    source: str = Query("site"),
+    user_id: str = Depends(get_user_id),
+):
+    """扫描件的 OCR 进度（已识别页 / 总页 / 是否正在后台识别）。"""
+    await _verify_session(session_id, user_id)
+    fp = await workspace_manager.resolve_file(user_id, path, source)
+    if not fp or fp.suffix.lower() != ".pdf":
+        raise HTTPException(status_code=404, detail="文件不存在")
+    try:
+        from services import pdf_ocr
+
+        return await asyncio.to_thread(pdf_ocr.progress, fp)
+    except Exception:
+        raise HTTPException(status_code=500, detail="读不到 OCR 进度")
+
+
+@router.get("/files/pdf-page")
+async def pdf_page(
+    session_id: str = Query(...),
+    path: str = Query(...),
+    page: int = Query(1, ge=1, le=500),
+    source: str = Query("site"),
+    user_id: str = Depends(get_user_id),
+):
+    await _verify_session(session_id, user_id)
+    fp = await workspace_manager.resolve_file(user_id, path, source)
+    if not fp or fp.suffix.lower() != ".pdf":
+        raise HTTPException(status_code=404, detail="文件不存在")
+    try:
+        png = await asyncio.to_thread(render_pdf_page, fp, page - 1)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception:
+        raise HTTPException(status_code=500, detail="这一页没有画出来")
+    return Response(content=png, media_type="image/png")
 
 
 @router.get("/files/download")

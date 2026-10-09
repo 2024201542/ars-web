@@ -243,6 +243,8 @@ class ClaudeEngine:
                         " 全流程这一步是用户点名要留下的文稿，必须按后面的路径用 Write 保存，"
                         "不要改旧文件，不要写到 uploads。"
                     )
+                if mode_line and "论文结构图.html" in mode_line:
+                    system_guide += " 这一步可以 Write 指定的那一个 .html，不要改成 txt，也不要生成图片。"
                 if mode_line:
                     system_guide += " " + mode_line
             else:

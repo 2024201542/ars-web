@@ -19,7 +19,8 @@ def test_topic_with_folder_lists_steps_and_waits():
     assert plan["pipeline"]["index"] == -1
     assert plan["pipeline"]["awaiting"] is True
     assert plan["pipeline"]["next_label"] == "快速简报"
-    assert "11-论文终稿.md" in plan["text"]
+    assert "11-论文终稿.txt" in plan["text"]
+    assert plan["text"].index("论文结构图.html") < plan["text"].index("05-论文初稿.txt")
     assert "还没有开始写" in plan["text"]
     assert plan["pipeline"]["topic"] == "写一篇关于记忆的论文"
 
@@ -32,7 +33,7 @@ def test_start_button_runs_only_the_first_step():
     plan = resolve_pipeline([prior], "开始", "continue", DIRS)
     assert plan["skip_model"] is False
     assert plan["pipeline"]["index"] == 0
-    assert plan["pipeline"]["file"] == "记忆方法论文写作/01-研究简报.md"
+    assert plan["pipeline"]["file"] == "记忆方法论文写作/01-研究简报.txt"
     assert "写一篇关于记忆的论文" in plan["model_prompt"]
     assert "只做第 1/" in plan["model_prompt"]
 
@@ -57,7 +58,7 @@ def test_confirm_advances_and_keeps_folder():
     plan = resolve_pipeline([prior], "确认，继续下一步", "continue", DIRS)
     assert plan["pipeline"]["index"] == 1
     assert plan["pipeline"]["label"] == "文献综述"
-    assert plan["pipeline"]["file"] == "记忆方法论文写作/02-文献综述.md"
+    assert plan["pipeline"]["file"] == "记忆方法论文写作/02-文献综述.txt"
 
 
 def test_note_while_waiting_repeats_same_step():
@@ -79,7 +80,7 @@ def test_asking_for_final_after_done_does_not_restart():
     assert plan["skip_model"] is False
     assert plan["pipeline"]["label"] == "终稿"
     assert plan["pipeline"]["index"] == len(STEPS) - 1
-    assert plan["pipeline"]["file"] == "22/11-论文终稿.md"
+    assert plan["pipeline"]["file"] == "22/11-论文终稿.txt"
     assert "01-研究简报" not in plan["pipeline"]["file"]
 
 
@@ -94,15 +95,42 @@ def test_new_topic_after_done_waits_again():
     assert plan["pipeline"]["topic"] == "再写一篇关于睡眠的"
 
 
-def test_last_step_does_not_ask_to_continue():
+def test_outline_confirm_draws_html():
     prior = {
         "role": "assistant",
-        "metadata": '{"pipeline":{"index":9,"awaiting":true,"done":false,"folder":"记忆方法论文写作","topic":"记忆"}}',
+        "metadata": '{"pipeline":{"index":3,"awaiting":true,"done":false,"folder":"记忆方法论文写作","label":"大纲","file":"记忆方法论文写作/04-论文大纲.txt","topic":"记忆"}}',
+    }
+    plan = resolve_pipeline([prior], "确认，继续下一步", "continue", DIRS)
+    assert plan["pipeline"]["label"] == "结构图"
+    assert plan["pipeline"]["file"].endswith("论文结构图.html")
+    assert "不要用图片" in plan["mode_line"]
+    assert "不要改" in plan["mode_line"]
+
+
+def test_finished_draft_does_not_jump_back_to_diagram():
+    prior = {
+        "role": "assistant",
+        "metadata": '{"pipeline":{"index":4,"awaiting":true,"done":false,"folder":"记忆方法论文写作","label":"完整撰写","file":"记忆方法论文写作/05-论文初稿.txt"}}',
+    }
+    plan = resolve_pipeline([prior], "确认，继续下一步", "continue", DIRS)
+    assert plan["pipeline"]["label"] == "快速评审"
+    assert plan["pipeline"]["file"].endswith("06-审稿意见.txt")
+
+
+def test_last_step_does_not_ask_to_continue():
+    declare = next(i for i, step in enumerate(STEPS) if step["label"] == "声明")
+    prior = {
+        "role": "assistant",
+        "metadata": (
+            '{"pipeline":{"index":'
+            + str(declare)
+            + ',"awaiting":true,"done":false,"folder":"记忆方法论文写作","label":"声明","file":"记忆方法论文写作/10-声明.txt","topic":"记忆"}}'
+        ),
     }
     plan = resolve_pipeline([prior], "确认，继续下一步", "continue", DIRS)
     assert plan["pipeline"]["index"] == len(STEPS) - 1
     assert plan["pipeline"]["label"] == "终稿"
     assert plan["pipeline"]["done"] is True
     assert plan["pipeline"]["awaiting"] is False
-    assert plan["pipeline"]["file"].endswith("11-论文终稿.md")
+    assert plan["pipeline"]["file"].endswith("11-论文终稿.txt")
     assert "记忆" in plan["model_prompt"]

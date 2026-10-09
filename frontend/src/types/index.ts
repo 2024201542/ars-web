@@ -58,6 +58,8 @@ export interface DebatePayload {
   summarize_scope?: string
   summarize_pair?: string[]
   summarize_rounds?: number[]
+  rounds?: number
+  materials?: { name: string; path: string; source?: string }[]
 }
 
 export interface Message {
