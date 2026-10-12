@@ -201,14 +201,14 @@ def progress(path: str | pathlib.Path) -> dict:
 
 
 def warm_pages(path: str | pathlib.Path, pages: int = WARM_MAX_PAGES) -> None:
-    """后台把前 pages 页识别完并写入缓存；已在预热或已达页数则直接返回。"""
+    """后台继续识别 pages 个**尚未识别**的页并写缓存。
+
+    从第一篇没识别的页往后推进（不是每次都热最前面 12 页），所以多调用几次
+    就能把整份文档逐步识别完；已在预热中则直接返回。
+    """
     fp = pathlib.Path(path)
     key = str(fp.resolve())
     if key in _WARMING:
-        return
-    cache = read_cache(fp)
-    have = len([k for k, v in ((cache or {}).get("pages") or {}).items() if v])
-    if have >= pages:
         return
 
     _WARMING.add(key)
@@ -222,15 +222,20 @@ def warm_pages(path: str | pathlib.Path, pages: int = WARM_MAX_PAGES) -> None:
                 total = doc.page_count
                 data = read_cache(fp) or {"pages": {}}
                 store: dict = data.get("pages") or {}
-                for i in range(min(pages, total)):
-                    if store.get(str(i)):
+                done_new = 0
+                for i in range(total):
+                    if done_new >= pages:
+                        break
+                    if (store.get(str(i)) or "").strip():
                         continue
                     try:
                         store[str(i)] = ocr_page(doc, i)
                     except Exception as exc:
                         logger.warning("预热第 %d 页失败: %s", i + 1, exc)
+                    done_new += 1
                     write_cache(fp, {"pages": store, "total_pages": total})
-                logger.info("OCR 预热完成: %s 前 %d 页", fp.name, min(pages, total))
+                have = len([k for k, v in store.items() if (v or "").strip()])
+                logger.info("OCR 预热 +%d 页（%s 现 %d/%d）", done_new, fp.name, have, total)
             finally:
                 doc.close()
         except Exception as exc:

@@ -261,6 +261,7 @@ async def _complete(model: dict, key: str, base: str, system: str, user: str, ma
                         "x-api-key": key,
                         "anthropic-version": "2023-06-01",
                         "content-type": "application/json",
+                        "accept-encoding": "identity",
                     },
                     json={
                         "model": model["id"],
@@ -275,7 +276,8 @@ async def _complete(model: dict, key: str, base: str, system: str, user: str, ma
             else:
                 response = await client.post(
                     chat_completions_url(base),
-                    headers={"Authorization": f"Bearer {key}", "content-type": "application/json"},
+                    headers={"Authorization": f"Bearer {key}", "content-type": "application/json",
+                             "accept-encoding": "identity"},
                     json={
                         "model": model["id"],
                         "messages": [
@@ -322,16 +324,20 @@ _ANSWER_OPEN = "【回答】"
 
 async def _stream_complete(model: dict, key: str, base: str, system: str, user: str,
                            max_tokens: int = 1000,
-                           marker_mode: bool = True) -> AsyncIterator[dict]:
+                           marker_mode: bool = True,
+                           extra_body: dict | None = None) -> AsyncIterator[dict]:
     """流式调用模型，产出 {kind: 'thinking'|'answer'|'error', delta} 事件。
 
     marker_mode=False 时不做【思考】/【回答】切分，正文统一按 answer 下发
     （用于辩题生成这类自定义输出格式、没有那两种标记的场景）。
+    extra_body 用于追加厂商特有参数（例如 Kimi 的 thinking 开关）。
     """
     provider = PROVIDERS.get(model["provider"]) or {}
     anthropic = provider.get("protocol") == "anthropic"
     timeout = httpx.Timeout(120.0 if max_tokens > 1000 else 90.0, connect=15.0)
-    headers = {"content-type": "application/json"}
+    # Accept-Encoding: identity —— 有些厂商（实测 Moonshot/Kimi）会对 SSE 回 Brotli，
+    # httpx 在"流式 + br"组合下会抛 DecodingError，禁用压缩最稳。
+    headers = {"content-type": "application/json", "accept-encoding": "identity"}
     if anthropic:
         root = (base or "https://api.anthropic.com").rstrip("/")
         url = root + "/v1/messages"
@@ -344,6 +350,8 @@ async def _stream_complete(model: dict, key: str, base: str, system: str, user: 
         body = {"model": model["id"], "max_tokens": max_tokens, "stream": True,
                 "messages": [{"role": "system", "content": system},
                              {"role": "user", "content": user}]}
+        if extra_body:
+            body.update(extra_body)
 
     buf = ""
     phase = "head"          # head → thinking → answer

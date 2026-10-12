@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "backend": "native",
+  "rasterEngine": "libreoffice",
+  "source": "saved",
+  "inputPath": "C:\\Users\\28473\\Desktop\\学术写作工具测试\\中国农村改革国家与土地产权关系的变化（讲解稿）_da27eb.pptx",
+  "sourceSha256": "d135f0892340dda27fa1de76b33a49002e36e7502530e1734927e5c564fe83b3",
+  "dpi": 100,
+  "pageCount": 19,
+  "images": [
+    {
+      "index": 1,
+      "page": 2,
+      "path": "D:\\academic-research-skills-main\\ars-web\\backend\\_toc_preview\\page-0001.png",
+      "width": 1334,
+      "height": 751,
+      "rectangle": {
+        "x": 0,
+        "y": 0,
+        "width": 1280.0666666666666,
+        "height": 720.0666666666667
+      },
+      "byteLength": 493113
+    },
+    {
+      "index": 2,
+      "page": 3,
+      "path": "D:\\academic-research-skills-main\\ars-web\\backend\\_toc_preview\\page-0002.png",
+      "width": 1334,
+      "height": 751,
+      "rectangle": {
+        "x": 0,
+        "y": 0,
+        "width": 1280.0666666666666,
+        "height": 720.0666666666667
+      },
+      "byteLength": 109110
+    }
+  ],
+  "missingFonts": [
+    "Noto Sans"
+  ]
+}

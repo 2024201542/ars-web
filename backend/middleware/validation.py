@@ -23,8 +23,9 @@ DANGEROUS_PATTERNS = [
 ]
 
 # 最大输入长度限制
+# message 上限要留给"附件正文"：一份 50 页扫描件 OCR 后约 5–6 万字，原来 50000 会把整条消息拒掉。
 MAX_INPUT_LENGTHS = {
-    'message': 50000,
+    'message': 200000,
     'title': 200,
     'skill_name': 50,
     'mode_name': 50,

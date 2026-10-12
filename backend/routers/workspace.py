@@ -2,6 +2,7 @@
 
 import asyncio
 import io
+import json
 import os
 import re
 import tempfile
@@ -321,7 +322,11 @@ async def pdf_ocr_progress(
     try:
         from services import pdf_ocr
 
-        return await asyncio.to_thread(pdf_ocr.progress, fp)
+        info = await asyncio.to_thread(pdf_ocr.progress, fp)
+        # 预览扫描件时顺手预热：之后把它 @ 进对话读正文就不用等 OCR
+        if info.get("needs_ocr") and info.get("done", 0) < info.get("total", 0):
+            await asyncio.to_thread(pdf_ocr.warm_pages, fp, pdf_ocr.WARM_MAX_PAGES)
+        return info
     except Exception:
         raise HTTPException(status_code=500, detail="读不到 OCR 进度")
 
@@ -400,6 +405,8 @@ class GenerateDocRequest(BaseModel):
     filename: str = ""
     message_ids: list[int] = Field(default_factory=list)
     template_path: str = ""
+    # 兜底正文：前端本地新消息的 id 与库里对不上时，直接用这段文字
+    text: str = ""
 
 
 def _draft_markdown(session: dict, picked: list[dict]) -> str:
@@ -572,6 +579,144 @@ async def generate_doc(
         return info
 
     raise HTTPException(status_code=400, detail="仅支持 markdown 或 docx")
+
+
+class GeneratePptRequest(BaseModel):
+    filename: str = ""
+    message_ids: list[int] = Field(default_factory=list)
+    model: str = ""            # 留空则用当前选中的模型
+    guidance: str = ""         # 风格/重点的补充要求
+    pages: int = 0             # 0 = 让模型按内容自定
+    template_path: str = ""    # 可选：工作区里的 .pptx 模板
+    save_outline: bool = True  # 同时存一份 outline.json，便于手改后重建
+
+
+def _pick_messages(messages: list[dict], wanted: set[int], fallback_text: str = "") -> list[dict]:
+    """勾选优先，否则取最后一条有正文的助手回复。
+
+    前端刚流式生成的消息用的是本地时间戳 id，和库里的 id 对不上，
+    所以对不上时退回用前端直接传来的正文，不报错。
+    """
+    if wanted:
+        picked = [m for m in messages if m.get("id") in wanted and (m.get("content") or "").strip()]
+        if picked:
+            return picked
+        if (fallback_text or "").strip():
+            return [{"id": 0, "role": "assistant", "content": fallback_text}]
+        raise HTTPException(status_code=400, detail="所选消息没有可用的正文")
+    assistants = [
+        m for m in messages
+        if m.get("role") == "assistant" and (m.get("content") or "").strip()
+        and not (m.get("content") or "").strip().startswith("——")
+    ]
+    if not assistants:
+        if (fallback_text or "").strip():
+            return [{"id": 0, "role": "assistant", "content": fallback_text}]
+        raise HTTPException(status_code=400, detail="还没有可用的回复，请先对话或勾选消息")
+    return [assistants[-1]]
+
+
+class GeneratePptRequest(BaseModel):
+    filename: str = ""
+    message_ids: list[int] = Field(default_factory=list)
+    model: str = ""            # 留空则用当前选中的模型
+    guidance: str = ""         # 风格/重点的补充要求
+    pages: int = 0             # 0 = 让模型按内容自定
+    template_path: str = ""    # 可选：工作区里的 .pptx 模板
+    save_outline: bool = True  # 同时存一份 outline.json，便于手改后重建
+    text: str = ""             # 兜底正文（同 GenerateDocRequest）
+    save_dir: str = ""         # 写入哪个目录（空=generated/）；用于"放到附件所在文件夹"
+
+
+@router.get("/files/pptx-slides")
+async def pptx_slides(
+    session_id: str = Query(...),
+    path: str = Query(...),
+    source: str = Query("site"),
+    user_id: str = Depends(get_user_id),
+):
+    """读出一份 .pptx 的逐页文字，供预览区显示与就地修改。"""
+    await _verify_session(session_id, user_id)
+    fp = await workspace_manager.resolve_file(user_id, path, source)
+    if not fp or fp.suffix.lower() != ".pptx":
+        raise HTTPException(status_code=404, detail="文件不存在")
+    try:
+        from services.pptx_edit import read_slides
+
+        slides = await asyncio.to_thread(read_slides, fp)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"这份 PPT 读不出来：{exc}")
+    return {"slides": slides, "path": path}
+
+
+class PptxSlidesUpdate(BaseModel):
+    slides: list[dict] = Field(default_factory=list)
+
+
+@router.put("/files/pptx-slides")
+async def update_pptx_slides(
+    session_id: str = Query(...),
+    path: str = Query(...),
+    req: PptxSlidesUpdate = PptxSlidesUpdate(),
+    source: str = Query("site"),
+    user_id: str = Depends(get_user_id),
+):
+    """把预览区改过的文字写回 .pptx（版式与主题保持不变）。"""
+    await _verify_session(session_id, user_id)
+    fp = await workspace_manager.resolve_file(user_id, path, source)
+    if not fp or fp.suffix.lower() != ".pptx":
+        raise HTTPException(status_code=404, detail="文件不存在")
+    if not req.slides:
+        raise HTTPException(status_code=400, detail="没有要写入的页")
+    try:
+        from services.pptx_edit import write_slides
+
+        changed = await asyncio.to_thread(write_slides, fp, req.slides)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"写回 PPT 失败：{exc}")
+    return {"ok": True, "slides": changed, "path": path}
+
+
+@router.post("/generate-ppt")
+async def generate_ppt(
+    session_id: str = Query(...),
+    req: GeneratePptRequest = GeneratePptRequest(),
+    user_id: str = Depends(get_user_id),
+):
+    """把对话内容做成 PPT：模型出大纲 → python-pptx 生成 .pptx → 落盘。
+
+    模型无关：默认用当前选中的模型，也可在 req.model 指定（DeepSeek / 千问 / Kimi / 智谱 / Claude）。
+    save_dir 给了就写到那个目录（用于"放到附件所在文件夹"），否则进 generated/。
+    """
+    await _verify_session(session_id, user_id)
+    from services import ppt_chat
+
+    session = await state_tracker.get_session(session_id)
+    messages = await state_tracker.get_messages(session_id)
+    picked = _pick_messages(messages, set(req.message_ids or []), req.text)
+    material = ppt_chat.condense_material(_draft_markdown(session or {}, picked))
+    title_hint = (req.filename or (session or {}).get("title") or "").strip()
+
+    save_dir = None
+    if (req.save_dir or "").strip():
+        save_dir = await ppt_chat.resolve_save_dir(user_id, [req.save_dir.strip()], "")
+
+    info = await ppt_chat.build_and_save(
+        user_id,
+        material=material,
+        guidance=req.guidance,
+        pages=req.pages,
+        model_id=req.model,
+        title_hint=title_hint,
+        template_path=req.template_path,
+        save_dir=save_dir,
+        filename=req.filename,
+        save_outline=req.save_outline,
+    )
+    if info.get("error"):
+        raise HTTPException(status_code=400, detail=info["error"])
+    info["source_kind"] = "selected" if req.message_ids else "latest_reply"
+    return info
 
 
 @router.post("/edits/{backup_id}/undo")

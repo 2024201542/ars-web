@@ -12,9 +12,10 @@ import type { DebatePayload, DebatePlan, DebateVoice } from '@/types'
 import SkillGuide from './SkillGuide.vue'
 import FileMentionPopup from './FileMentionPopup.vue'
 import MarkdownIt from 'markdown-it'
-import { DIRECT_ENTRIES, FUNCTION_GROUPS, entryButtonLabel } from '@/utils/composerModes'
+import { DIRECT_ENTRIES, FUNCTION_GROUPS, MODULE_ENTRIES, entryButtonLabel } from '@/utils/composerModes'
 import { renderMermaidBlocks } from '@/utils/mermaidBlocks'
-import { ArrowUp, Square, Copy, Check, Loader2, FilePlus, FileText, X, ChevronDown, ChevronRight, ChevronLeft } from 'lucide-vue-next'
+import { ArrowUp, Square, Copy, Check, Loader2, FilePlus, FileText, X, ChevronDown, ChevronRight, ChevronLeft, Presentation, LayoutTemplate } from 'lucide-vue-next'
+import PptTemplatePicker from '@/components/PptTemplatePicker.vue'
 
 const props = defineProps<{
   sessionId: string
@@ -31,8 +32,18 @@ const pendingStart = usePendingStartStore()
 const workspaceStore = useWorkspaceStore()
 const toast = useToast()
 
-const { isStreaming, resultContent, progressTokens, progressPhase, lastToolUse, statusText, liveStream, sendMessage: streamSend, abort } =
+const { isStreaming, resultContent, progressTokens, progressPhase, lastToolUse, statusText, liveStream, lastPpt, sendMessage: streamSend, abort } =
   useChatStream(() => props.sessionId, () => emit('done'))
+
+// 对话里直接生成的 PPT：刷新左侧文件栏并提示（文件落在附件所在文件夹，或你打开的文件夹）
+watch(lastPpt, async (info) => {
+  if (!info) return
+  // 文件写进了本机文件夹时，把文件树切到"本机文件夹"再刷新，否则用户会看不到新文件
+  if (info.source === 'local') workspaceStore.source = 'local' as any
+  await workspaceStore.loadFiles(props.sessionId)
+  toast.success(`已生成 PPT：${info.name}（${info.pages} 页）→ ${info.dir || 'generated'}`)
+  emit('done')
+})
 
 interface LiteraturePaper { doi: string; title: string; year: string; has_pdf: boolean }
 const pickedPapers = ref<Record<number, string[]>>({})
@@ -92,6 +103,13 @@ const writable = computed(() => {
 watch(() => props.openFile?.path, () => { skipWrite.value = false })
 const docxTemplates = computed(() =>
   workspaceStore.files.filter(f => (f.ext || '').toLowerCase() === '.docx' && f.dir !== 'generated')
+)
+// PPT：页数 / 补充要求 / 可选 .pptx 模板（模板可来自左侧文件栏，也可上传）
+const pptPages = ref(10)
+const pptGuidance = ref('')
+const pptTemplate = ref('')
+const pptxTemplates = computed(() =>
+  workspaceStore.files.filter(f => (f.ext || '').toLowerCase() === '.pptx')
 )
 const attachedFiles = ref<any[]>([])
 const mentionQuery = ref('')
@@ -235,6 +253,29 @@ function closeComposerMenus() {
   debateSetup.value = false
   activeGroup.value = ''
 }
+// ── PPT 生成入口：模板与页数（走按钮选择，不改会话）──
+// 注意：文档菜单里已有一组 pptPages/pptTemplate（那是"生成文档 → 生成 PPT"面板用的），这里另起名字
+const pptPicker = ref(false)
+const pptTemplateId = ref('')
+const pptSessionPages = ref(12)
+const pptTemplateName = ref('按主题（内置版式）')
+const pptAutoImage = ref(false)
+
+function openPptPicker() {
+  closeComposerMenus()
+  pptPicker.value = true
+}
+
+function applyPptChoice(payload: { templateId: string; pages: number; name: string; autoImage?: boolean }) {
+  pptTemplateId.value = payload.templateId
+  pptSessionPages.value = payload.pages
+  pptTemplateName.value = payload.name
+  pptAutoImage.value = Boolean(payload.autoImage)
+  if (payload.templateId) {
+    toast.info(`本次生成会用模板：${payload.name}（${payload.pages || '自定'} 页）`)
+  }
+}
+
 const debateSetupLabel = computed(() => debateIds.value.length ? `辩论设置 · ${debateIds.value.length}` : '辩论设置')
 
 function onComposerDocClick(event: MouseEvent) {
@@ -244,6 +285,12 @@ function onComposerDocClick(event: MouseEvent) {
 function showPlanned(label: string) {
   closeComposerMenus()
   toast.info(`${label}还在待开发`)
+}
+
+// 独立模块（PPT生成）：不在这个会话里改入口，直接跳到模块页面
+function openModule(route: string) {
+  closeComposerMenus()
+  window.location.hash = `#${route}`
 }
 
 async function pickEntry(skill: string, mode: string) {
@@ -522,6 +569,30 @@ async function writeInto(msg: { id: number; content?: string | null }) {
   }
 }
 
+async function generatePptFromMessage(id: number) {
+  generatingId.value = id
+  try {
+    const msg = sessionStore.messages.find((m) => m.id === id)
+    const file = await api.generateWorkspacePpt(props.sessionId, {
+      message_ids: [id],
+      // 本地新消息的 id 与库里对不上，带上正文兜底，避免"所选消息没有可用的正文"
+      text: msg?.content || '',
+      pages: pptPages.value,
+      guidance: pptGuidance.value.trim(),
+      template_path: pptTemplate.value,
+    })
+    await workspaceStore.loadFiles(props.sessionId)
+    const extra = file.fallback ? '（模型没给出标准格式，已按文本粗排，建议到大纲 json 里微调后重生成）' : ''
+    toast.success(`已生成 PPT：${file.name}｜${file.pages} 页｜${file.model}${extra}`)
+    emit('generated', file)
+    docMenuId.value = null
+  } catch (e: any) {
+    toast.error(e.message || '生成 PPT 失败')
+  } finally {
+    generatingId.value = null
+  }
+}
+
 async function generateFromMessage(id: number, format: 'markdown' | 'docx', merge = false) {
   const ids = merge ? [...selectedIds.value] : [id]
   if (!ids.length) return
@@ -566,7 +637,7 @@ const composerPlaceholder = computed(() => {
   if (props.skillName === 'literature-find' && props.modeName === 'passage') return '贴一段正在写的文字，Enter 生成检索词并查找'
   if (props.skillName === 'academic-paper' && props.modeName === 'structure-map') return '点名要画的文稿，或直接发送。只另存结构图，不改原文'
   if (props.skillName === 'literature-find' || (props.skillName === 'academic-paper' && props.modeName === 'lit-search')) return '输入检索词，Enter 发送'
-  return '输入研究主题… 用 @ 引用文件，或把文件拖到这里；Enter 发送'
+  return '输入研究主题… @ 引用文件；说「根据这个做个 ppt」会直接生成幻灯片并放到该文件所在文件夹'
 })
 
 async function releaseTurn() {
@@ -814,16 +885,10 @@ async function doSend(msg: string) {
     return
   }
   sendingLock.value = true
-  let fullMsg = msg
-  if (attachedFiles.value.length) {
-    const ctx: string[] = []
-    for (const f of attachedFiles.value) {
-      if (f.is_dir) { ctx.push(`[文件夹: ${f.path}]`); continue }
-      try { const r = await api.getFileContent(props.sessionId, f.path); ctx.push(`[文件: ${f.name}]\n${r.content}`) } catch { ctx.push(`[文件: ${f.name}]`) }
-    }
-    fullMsg = msg ? `${ctx.join('\n\n')}\n---\n用户问题: ${msg}` : `${ctx.join('\n\n')}\n---\n请分析以上文件内容`
-  }
-  const display = attachedFiles.value.length ? attachedFiles.value.map((f: any) => `📎 ${f.name}`).join(' ') + (msg ? '\n' + msg : '') : msg
+  // 先把消息气泡挂出来，再去读附件——否则读扫描件（服务端要 OCR，可能十几秒）
+  // 期间界面上什么都没有，看起来就是"点了发送愣一下"。
+  const files = [...(attachedFiles.value as any[])]
+  const display = files.length ? files.map((f: any) => `📎 ${f.name}`).join(' ') + (msg ? '\n' + msg : '') : msg
   const author = auth.user?.display_name || auth.user?.username || ''
   const metadata = author ? JSON.stringify({ author }) : null
   sessionStore.addMessage({ id: Date.now(), session_id: props.sessionId, role: 'user', content: display, agent_name: null, phase_name: null, metadata, created_at: new Date().toISOString() })
@@ -831,6 +896,42 @@ async function doSend(msg: string) {
   const aid = Date.now() + 1
   sessionStore.addMessage({ id: aid, session_id: props.sessionId, role: 'assistant', content: '', agent_name: null, phase_name: null, metadata: null, created_at: new Date().toISOString() })
   scrollToBottom(true)
+
+  let fullMsg = msg
+  if (files.length) {
+    progressPhase.value = 'reading'
+    const ctx: string[] = []
+    const FILE_CAP = 30000          // 单个附件最多注入多少字
+    const TOTAL_CAP = 45000         // 全部附件合计上限
+    let used = 0
+    for (const f of files) {
+      if (f.is_dir) { ctx.push(`[文件夹: ${f.path}]`); continue }
+      // 图片不读正文（读不出来），它们会随 attach_paths 一起发给后端当"配图素材"
+      const lower = String(f.name || '').toLowerCase()
+      if (['.png', '.jpg', '.jpeg', '.webp', '.bmp', '.gif'].some((e) => lower.endsWith(e))) {
+        ctx.push(`[图片素材: ${f.name}]`)
+        continue
+      }
+      try {
+        const r = await api.getFileContent(props.sessionId, f.path, props.source)
+        let body = String(r.content || '')
+        const room = Math.max(0, Math.min(FILE_CAP, TOTAL_CAP - used))
+        if (body.length > room) {
+          const dropped = body.length - room
+          body = body.slice(0, room) + `\n…（这份文件正文过长，已截断 ${dropped} 字；需要更多内容请分段提问）`
+          toast.info(`${f.name}：已转成文字 ${r.content.length} 字，本次注入前 ${room} 字`)
+        } else {
+          toast.info(`${f.name}：已转成文字 ${body.length} 字`)
+        }
+        used += body.length
+        ctx.push(`[文件: ${f.name}]\n${body}`)
+      } catch {
+        ctx.push(`[文件: ${f.name}]（这份文件这次没读出正文，请直接在左侧打开它，或换一份文字版）`)
+      }
+    }
+    fullMsg = msg ? `${ctx.join('\n\n')}\n---\n用户问题: ${msg}` : `${ctx.join('\n\n')}\n---\n请分析以上文件内容`
+  }
+  progressPhase.value = 'init'
   steering.value = props.skillName === 'idea-debate' && props.modeName === 'contrast'
   try {
     await streamSend(
@@ -840,6 +941,10 @@ async function doSend(msg: string) {
       undefined,
       undefined,
       debateRequest(),
+      { paths: files.filter((f: any) => !f.is_dir).map((f: any) => f.path), source: props.source, userText: msg,
+        pptTemplateId: props.skillName === 'ppt-maker' ? pptTemplateId.value : '',
+        pptPages: props.skillName === 'ppt-maker' ? pptSessionPages.value : 0,
+        pptAutoImage: props.skillName === 'ppt-maker' ? pptAutoImage.value : false },
     )
   } finally {
     steering.value = false
@@ -1110,6 +1215,17 @@ function renderMarkdown(t: string) { return t ? md.render(t) : '' }
             </div>
             </template>
           </div>
+          <!-- 对话里一句话生成的 PPT -->
+          <div v-if="msg.role === 'assistant' && (msg as any).ppt" class="mt-2 rounded-xl border border-ruc-red/30 bg-ruc-red-pale/40 px-3 py-2">
+            <p class="text-[11px] font-ui text-ruc-red flex items-center gap-1">
+              <Presentation class="w-3.5 h-3.5" />
+              已生成 PPT：{{ (msg as any).ppt.name }}
+              <span class="text-ruc-text-light">{{ (msg as any).ppt.pages }} 页 · {{ (msg as any).ppt.model }}</span>
+            </p>
+            <p class="mt-1 text-[10px] font-ui text-ruc-text-dim">
+              保存在：{{ (msg as any).ppt.dir || 'generated' }}（左侧文件栏可点开、下载；中间预览区能直接改文字后写回）
+            </p>
+          </div>
           <div v-if="msg.role === 'assistant' && debatePlanOf(msg)" class="mt-2 rounded-xl border border-ruc-divider bg-ruc-warm px-3 py-2">
             <p class="text-[11px] font-ui text-ruc-text">辩题：{{ debatePlanOf(msg)?.topic }}</p>
             <p v-for="(stance, id) in (debatePlanOf(msg)?.stances || {})" :key="'plan-' + id" class="mt-1 text-[11px] font-ui text-ruc-text-dim">{{ seatOf(String(id))?.name || id }}：{{ stance }}</p>
@@ -1236,6 +1352,37 @@ function renderMarkdown(t: string) { return t ? md.render(t) : '' }
             </select>
           </label>
           <p class="text-[10px] text-ruc-text-light leading-relaxed">先把学校 Word 模板上传到左侧文件栏。会沿用它的标题样式、页边距和页眉页脚，正文示例会被换成这篇回复。封面、目录、题注还做不到。</p>
+
+          <!-- PPT：用当前选中的模型把这条回复做成幻灯片 -->
+          <div class="mt-1 pt-2 border-t border-ruc-divider flex flex-col gap-1">
+            <div class="flex items-center gap-1 flex-wrap">
+              <button class="px-2 py-1 rounded-md border border-ruc-red/40 text-[11px] font-ui text-ruc-red hover:bg-ruc-red-pale inline-flex items-center gap-1"
+                      :disabled="generatingId===msg.id" @click="generatePptFromMessage(msg.id)">
+                <Loader2 v-if="generatingId===msg.id" class="w-3 h-3 animate-spin" />
+                <Presentation v-else class="w-3 h-3" />
+                生成 PPT
+              </button>
+              <label class="flex items-center gap-1 text-[11px] font-ui text-ruc-text-dim">
+                页数
+                <select v-model.number="pptPages" class="rounded-md border border-ruc-divider bg-white px-1.5 py-1 text-[11px] text-ruc-text">
+                  <option v-for="n in [6, 8, 10, 12, 15, 20]" :key="'pg-' + n" :value="n">{{ n }} 页</option>
+                </select>
+              </label>
+            </div>
+            <input v-model="pptGuidance" type="text" placeholder="补充要求（选填），如：突出论点与证据，面向答辩"
+                   class="w-full rounded-md border border-ruc-divider px-2 py-1 text-[11px] font-ui text-ruc-text" />
+            <label class="flex items-center gap-1 text-[11px] font-ui text-ruc-text-dim">
+              <span class="flex-shrink-0">PPT 模板</span>
+              <select v-model="pptTemplate" class="max-w-[220px] rounded-md border border-ruc-divider bg-white px-1.5 py-1 text-[11px] text-ruc-text">
+                <option value="">不套模板（内置 16:9 版式）</option>
+                <option v-for="f in pptxTemplates" :key="'ppt-' + f.path" :value="f.path">{{ f.name }}</option>
+              </select>
+            </label>
+            <p class="text-[10px] text-ruc-text-light leading-relaxed">
+              用当前选中的模型出大纲（DeepSeek / 千问 / Kimi 都行），再由服务端生成 .pptx，进左侧文件栏。
+              同时会存一份 .outline.json，想改可以改它再重新生成。套模板时沿用模板的主题与版式。
+            </p>
+          </div>
         </div>
         </div>
       </div>
@@ -1252,8 +1399,8 @@ function renderMarkdown(t: string) { return t ? md.render(t) : '' }
       <div v-if="dropActive" class="pointer-events-none absolute inset-2 rounded-2xl border-2 border-dashed border-ruc-red/50 flex items-center justify-center text-xs font-ui text-ruc-red bg-white/70">松开即可加入对话</div>
       <div v-if="writable && openFile" class="flex items-center gap-1.5 mb-2 text-[11px] font-ui text-ruc-text-dim">
         <FileText class="w-3 h-3 flex-shrink-0 text-ruc-red/60" />
-        <span class="truncate">将写入：{{ openFile.name }}</span>
-        <button class="ml-auto p-0.5 rounded hover:bg-ruc-warm hover:text-ruc-text" title="这次不写入这篇" @click="skipWrite = true">
+        <span class="truncate">当前文稿：{{ openFile.name }}<span class="text-ruc-text-light">（只有你点名要改这篇时才会写入）</span></span>
+        <button class="ml-auto p-0.5 rounded hover:bg-ruc-warm hover:text-ruc-text" title="本次对话不再关联这篇文稿" @click="skipWrite = true">
           <X class="w-3 h-3" />
         </button>
       </div>
@@ -1280,6 +1427,14 @@ function renderMarkdown(t: string) { return t ? md.render(t) : '' }
                   <span class="block text-xs font-ui" :class="skillName === item.skill ? 'text-ruc-red' : 'text-ruc-text'">{{ item.label }}</span>
                   <span class="block text-[10px] font-ui text-ruc-text-light mt-0.5">{{ item.hint }}</span>
                 </button>
+                <p class="px-3 pt-2 pb-1 text-[10px] font-ui text-ruc-text-light">模块</p>
+                <button v-for="mod in MODULE_ENTRIES" :key="mod.key" class="w-full px-3 py-2 text-left hover:bg-ruc-warm flex items-center gap-2" @click="openModule(mod.route)">
+                  <span class="min-w-0 flex-1">
+                    <span class="block text-xs font-ui text-ruc-text">{{ mod.label }}</span>
+                    <span class="block text-[10px] font-ui text-ruc-text-light mt-0.5">{{ mod.hint }}</span>
+                  </span>
+                  <ExternalLink class="w-3 h-3 text-ruc-text-light flex-shrink-0" />
+                </button>
                 <p class="px-3 pt-2 pb-1 text-[10px] font-ui text-ruc-text-light">功能</p>
                 <button v-for="group in FUNCTION_GROUPS" :key="group.skill" class="w-full px-3 py-2 text-left hover:bg-ruc-warm flex items-center gap-2" @click="group.planned ? showPlanned(group.label) : (activeGroup = group.skill)">
                   <span class="min-w-0 flex-1">
@@ -1303,6 +1458,17 @@ function renderMarkdown(t: string) { return t ? md.render(t) : '' }
               </template>
             </div>
           </div>
+          <button
+            v-if="props.skillName === 'ppt-maker'"
+            type="button"
+            class="inline-flex items-center gap-1 max-w-[12rem] px-2 py-1 rounded-lg text-xs font-ui text-ruc-text hover:bg-ruc-warm"
+            title="选择/预览/上传 PPT 模板"
+            @click.stop="openPptPicker"
+          >
+            <LayoutTemplate class="w-3.5 h-3.5 text-ruc-red/70 flex-shrink-0" />
+            <span class="truncate">模板：{{ pptTemplateName }}</span>
+            <ChevronDown class="w-3.5 h-3.5 flex-shrink-0 text-ruc-text-light" />
+          </button>
           <div v-if="props.skillName === 'idea-debate' && props.modeName === 'contrast'" class="relative min-w-0">
             <button type="button" class="inline-flex items-center gap-1 max-w-[9rem] px-2 py-1 rounded-lg text-xs font-ui text-ruc-text hover:bg-ruc-warm" title="辩论设置" @click.stop="debateSetup = !debateSetup; modeMenu = false; modelMenu = false">
               <span class="truncate">{{ debateSetupLabel }}</span>
@@ -1417,5 +1583,14 @@ function renderMarkdown(t: string) { return t ? md.render(t) : '' }
         </div>
       </div>
     </div>
+
+    <!-- PPT 模板选择（含整页预览与上传） -->
+    <PptTemplatePicker
+      v-if="pptPicker"
+      :template-id="pptTemplateId"
+      :pages="pptSessionPages"
+      @close="pptPicker = false"
+      @confirm="applyPptChoice"
+    />
   </div>
 </template>

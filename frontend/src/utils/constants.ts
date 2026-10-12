@@ -8,6 +8,7 @@ export const SKILL_LABELS: Record<string, string> = {
   'idea-debate': '想法深入',
   'literature-find': '文献查找',
   'kimi-cnki-search': '知网/CSSCI检索',
+  'ppt-maker': 'PPT 生成',
 }
 
 export const SKILL_ROUTES: Record<string, string> = {
@@ -18,6 +19,7 @@ export const SKILL_ROUTES: Record<string, string> = {
   'idea-debate': 'paper',
   'literature-find': 'paper',
   'kimi-cnki-search': 'kimi',
+  'ppt-maker': 'ppt',
 }
 
 export const SKILL_DESCRIPTIONS: Record<string, string> = {
@@ -28,6 +30,7 @@ export const SKILL_DESCRIPTIONS: Record<string, string> = {
   'kimi-cnki-search': '基于月之暗面 Kimi AI 的中文学术文献检索，支持 CNKI 和 CSSCI 来源期刊检索。3 种模式：知网检索、CSSCI 检索、语料构建',
   'idea-debate': '写作前或写作中把一个想法想深。苏格拉底式提问选一个模型。多模型辩论给每位一个看法，一次一位发言，思考和结果分开。同一个接口里的不同模型也可以。',
   'literature-find': '向 OpenAlex 检索真实文献，列出题名、作者、年份、来源和 DOI。按文段会先用当前模型从文字里拟检索词。查找文件可以勾选公开 PDF 放到左侧。没有公开全文的不会下载。知网接口还留着，尚未接通。',
+  'ppt-maker': '读你点名的文件或材料，先给出逐页提纲与页数，确认后生成可编辑的 .pptx。右侧「模板」按钮里可以挑模板、预览模板、上传自己的模板。',
 }
 
 /** 将技能名简称为最大 4 字的标签 */

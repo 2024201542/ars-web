@@ -35,11 +35,13 @@ const router = createRouter({
       },
     },
     { path: '/settings', name: 'settings', component: () => import('@/views/SettingsView.vue') },
+    { path: '/ppt', name: 'ppt', component: () => import('@/views/PptView.vue') },
     { path: '/session/:id/research', name: 'research', component: () => import('@/views/WorkSessionView.vue'), meta: { skill: 'deep-research' } },
     { path: '/session/:id/paper', name: 'paper', component: () => import('@/views/WorkSessionView.vue'), meta: { skill: 'academic-paper' } },
     { path: '/session/:id/reviewer', name: 'reviewer', component: () => import('@/views/WorkSessionView.vue'), meta: { skill: 'academic-paper-reviewer' } },
     { path: '/session/:id/pipeline', name: 'pipeline', component: () => import('@/views/WorkSessionView.vue'), meta: { skill: 'academic-pipeline' } },
     { path: '/session/:id/kimi', name: 'kimi', component: () => import('@/views/WorkSessionView.vue'), meta: { skill: 'kimi-cnki-search' } },
+    { path: '/session/:id/ppt', name: 'ppt-session', component: () => import('@/views/WorkSessionView.vue'), meta: { skill: 'ppt-maker' } },
     { path: '/admin', name: 'admin', component: () => import('@/views/AdminView.vue'), meta: { admin: true } },
   ],
 })

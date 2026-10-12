@@ -65,9 +65,11 @@ MODELS: list[dict] = [
      "desc": "最强推理能力，适合复杂分析与长流程任务"},
     {"id": "claude-haiku-4-5", "name": "Claude Haiku", "provider": "anthropic",
      "desc": "最快、最经济，适合简单任务"},
-    # Kimi / 月之暗面（Anthropic 兼容）
-    {"id": "kimi-k2-0905-preview", "name": "Kimi K2", "provider": "moonshot",
-     "desc": "月之暗面 Kimi，超长上下文，中文表现优秀"},
+    # Kimi / 月之暗面（思考型，较慢：同一出稿任务实测 45s，DeepSeek 13s；适合想方向、不适合赶稿）
+    {"id": "kimi-k3", "name": "Kimi K3", "provider": "moonshot",
+     "desc": "月之暗面旗舰，超长上下文，深度思考型（慢）"},
+    {"id": "kimi-k2.6", "name": "Kimi K2.6", "provider": "moonshot",
+     "desc": "Kimi 均衡版，中文表现好（慢）"},
     # 智谱 GLM（Anthropic 兼容）
     {"id": "glm-4.6", "name": "GLM-4.6", "provider": "zhipu",
      "desc": "智谱 GLM 旗舰模型，综合能力强"},

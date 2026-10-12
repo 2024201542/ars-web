@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import pathlib
 
 from fastapi import APIRouter, HTTPException, Request, Depends
 from pydantic import BaseModel, Field
@@ -17,6 +18,8 @@ from logging_config import get_logger
 from services.claude_engine import claude_session_exists, engine as claude
 
 router = APIRouter(prefix="/api/sessions", tags=["chat"])
+logger = get_logger(__name__)
+BACKEND_DIR = pathlib.Path(__file__).resolve().parents[1]
 
 
 class DebateHintBody(BaseModel):
@@ -25,6 +28,96 @@ class DebateHintBody(BaseModel):
 
 async def _static_reply(text: str):
     yield {"event": "message", "data": {"delta": text}}
+    yield {"event": "done", "data": {"message": "完成"}}
+
+
+async def _ppt_reply(session_id: str, user_id: str, req, messages: list[dict]):
+    """对话框里说一句要 PPT，就直接生成 .pptx 并放到附件所在文件夹。"""
+    from services import ppt_chat
+    from services.workspace_manager import workspace_manager
+
+    async def workspace_manager_resolve(uid: str, rel: str, source: str):
+        return await workspace_manager.resolve_file(uid, rel, source or "site")
+
+    parts: list[str] = []
+    message = (req.message or "").strip()
+    if message:
+        parts.append(message)
+    # 没带附件时，补上最近几条助手回复当素材
+    if "[文件:" not in message:
+        recent = [m for m in messages if m.get("role") == "assistant" and (m.get("content") or "").strip()]
+        parts.extend((m.get("content") or "").strip() for m in recent[-3:])
+    material = ppt_chat.condense_material("\n\n".join(parts))
+
+    paths = list(getattr(req, "attach_paths", None) or [])
+    if (req.open_path or "").strip():
+        paths.append(req.open_path.strip())
+    save_dir = await ppt_chat.resolve_save_dir(user_id, paths, getattr(req, "attach_source", "") or "")
+    if save_dir is None:
+        # 没带附件时，直接写进用户当前打开的那个本机文件夹——
+        # 否则文件落在工作区 generated/，而左侧文件树显示的是本机文件夹，用户会"看不到文件"。
+        from services.workspace_manager import workspace_manager
+
+        save_dir = await workspace_manager.get_local_root(user_id)
+
+    # 配图素材：附件里"是图片"的当配图；附了 PDF 就顺手把里面的图表抽出来当配图候选
+    from services import ppt_image
+
+    image_paths: list[str] = []
+    for raw in paths:
+        try:
+            resolved = await workspace_manager_resolve(user_id, raw, getattr(req, "attach_source", "") or "")
+        except Exception:
+            resolved = None
+        if not resolved:
+            continue
+        if ppt_image.is_image(resolved):
+            image_paths.append(str(resolved))
+        elif str(resolved).lower().endswith(".pdf"):
+            out_dir = (save_dir or (BACKEND_DIR / "generated")) / "_ppt_images"
+            extracted = await asyncio.to_thread(
+                ppt_image.extract_from_pdf, str(resolved), str(out_dir), 200, 6
+            )
+            image_paths.extend(a["path"] for a in extracted)
+            if extracted:
+                logger.info("从 PDF 抽出 %d 张图当配图", len(extracted))
+
+    yield {"event": "phase_start",
+           "data": {"phase": "tool", "description": "正在整理大纲并生成 PPT（约 15–60 秒）"}}
+    info = await ppt_chat.build_and_save(
+        user_id,
+        material=material,
+        guidance="",
+        pages=int(getattr(req, "ppt_pages", 0) or 0),
+        model_id=req.model or "",
+        title_hint="",
+        template_id=(getattr(req, "ppt_template_id", "") or "").strip(),
+        save_dir=save_dir,
+        images=image_paths,
+        auto_image=bool(getattr(req, "ppt_auto_image", False)),
+    )
+    if info.get("error"):
+        yield {"event": "message", "data": {"delta": f"这次没能生成 PPT：{info['error']}"}}
+        yield {"event": "done", "data": {"message": "完成"}}
+        return
+    where = info.get("dir") or ""
+    if info.get("source") == "local":
+        where = f"你打开的文件夹{f'（{where}）' if where else ''}"
+    else:
+        where = where or "工作区 generated"
+    yield {"event": "ppt_created", "data": info}
+    sections = "、".join([s for s in (info.get("sections") or []) if s][:6])
+    template_line = f"用了模板：{info['template']}\n" if info.get("template") else ""
+    yield {
+        "event": "message",
+        "data": {"delta": (
+            f"已生成 PPT：**{info['name']}**（{info['pages']} 页，{info['model']}）\n"
+            + template_line
+            + f"保存位置：{where}\n"
+            + (f"页面顺序：{sections}\n" if sections else "")
+            + "可以在中间预览区直接改文字后写回，也可以在左侧文件栏下载。"
+        )},
+    }
     yield {"event": "done", "data": {"message": "完成"}}
 
 
@@ -182,6 +275,9 @@ async def chat(request: Request, session_id: str, req: ChatRequest, user_id: str
     hint = _open_file_hint(req.open_path or "")
     if hint:
         prompt = f"{prompt}\n\n{hint}"
+    # 让模型知道界面能出真正的 pptx（否则它会答"生成不了二进制文档"，误导用户）
+    from services.entry_prompt import CAPABILITY_LINE
+    prompt = f"{prompt}\n\n{CAPABILITY_LINE}"
     user_meta = json.dumps({"author": author_name, "author_id": user_id}, ensure_ascii=False)
     await state_tracker.add_message(session_id, "user", req.message, metadata=user_meta)
 
@@ -193,6 +289,18 @@ async def chat(request: Request, session_id: str, req: ChatRequest, user_id: str
     debate_source = ""
     debate_participants: list[dict] = []
     summary_voices: list[dict] = []
+    # 对话框里说"根据这个写个 ppt" → 直接生成文件，不再走模型闲谈
+    ppt_job = False
+    ppt_info: dict | None = None
+    if not lit_text and skill_name not in {"idea-debate", "academic-pipeline"}:
+        from services.ppt_chat import wants_ppt
+
+        check_text = (getattr(req, "user_text", "") or "").strip()
+        if not check_text:
+            # 前端没单独传时，从注入的正文里把"用户问题"那段抽出来
+            marker = "用户问题:"
+            check_text = req.message.rsplit(marker, 1)[-1] if marker in req.message else req.message
+        ppt_job = wants_ppt(check_text)
     if literature_lookup:
         if passage_lookup:
             from services.literature_search import search_from_passage
@@ -272,6 +380,8 @@ async def chat(request: Request, session_id: str, req: ChatRequest, user_id: str
                 yield f"event: literature\ndata: {json.dumps(lit_payload, ensure_ascii=False)}\n\n"
             if lit_text:
                 source = _static_reply(lit_text)
+            elif ppt_job:
+                source = _ppt_reply(session_id, user_id, req, stored_messages)
             elif debate_job is not None and not debate_job.get("ok"):
                 source = _static_reply(debate_job.get("text") or "")
             elif debate_source == "topic" and debate_job is not None:
@@ -355,6 +465,8 @@ async def chat(request: Request, session_id: str, req: ChatRequest, user_id: str
                     debate_voices.append(data)
                 elif evt_type == "debate_topic":
                     debate_plan = data
+                elif evt_type == "ppt_created":
+                    ppt_info = data
                 elif evt_type == "error":
                     saw_error = True
                 if evt_type == "heartbeat":
@@ -387,6 +499,8 @@ async def chat(request: Request, session_id: str, req: ChatRequest, user_id: str
                 assistant_meta_obj["debate"] = {"voices": debate_voices}
             if debate_plan and not saw_error:
                 assistant_meta_obj["debate_plan"] = debate_plan
+            if ppt_info:
+                assistant_meta_obj["ppt"] = ppt_info
             if lit_payload and not saw_error:
                 assistant_meta_obj["literature"] = lit_payload
             assistant_meta = json.dumps(assistant_meta_obj, ensure_ascii=False)

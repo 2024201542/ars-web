@@ -28,7 +28,7 @@ ALLOWED_FILE_EXTS = {
     ".zip", ".tar.gz", ".gz",
     ".png", ".jpg", ".jpeg", ".svg", ".gif", ".webp",
     ".parquet", ".feather",
-    ".bib", ".tex", ".docx",
+    ".bib", ".tex", ".docx", ".pptx",
 }
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
 LOCAL_PROJECT_KEY = "local_project_path"
@@ -196,14 +196,30 @@ class WorkspaceManager:
                 return f
         return None
 
-    async def save_generated_file(self, user_id: str, filename: str, content: bytes) -> dict:
-        """把生成的文档写入用户工作区 generated/，供左侧文件栏预览和下载。"""
+    async def save_generated_file(self, user_id: str, filename: str, content: bytes,
+                                  target_dir: Optional[Path] = None) -> dict:
+        """写入生成的文件。
+
+        target_dir 为空 → 写进工作区 generated/（老行为）。
+        target_dir 给了 → 写进那个目录（必须在"当前打开的本机文件夹"或工作区之内），
+        用于"把生成的 PPT 放到附件所在的文件夹"；返回的 path/source 跟着对应的根走。
+        """
         ext = Path(filename).suffix.lower()
         _check_upload_ext(ext)
         if len(content) > MAX_FILE_SIZE:
             raise ValueError("文件过大，最大 50MB")
-        base = user_dir(user_id)
-        folder = base / "generated"
+        base_user = user_dir(user_id)
+        base_local = await self.get_local_root(user_id)
+        if target_dir is None:
+            folder, root, source = base_user / "generated", base_user, "site"
+        else:
+            folder = Path(target_dir)
+            if base_local and self._is_inside(folder, base_local):
+                root, source = base_local, "local"
+            elif self._is_inside(folder, base_user):
+                root, source = base_user, "site"
+            else:
+                raise ValueError("只能写进当前打开的文件夹或工作区")
         folder.mkdir(parents=True, exist_ok=True)
         safe = "".join(c for c in Path(filename).name if c.isalnum() or c in "._- （）()【】")[:120]
         if not safe.lower().endswith(ext):
@@ -213,14 +229,19 @@ class WorkspaceManager:
             stem, e = os.path.splitext(safe)
             dest = folder / f"{stem}_{uuid.uuid4().hex[:6]}{e}"
         await asyncio.to_thread(dest.write_bytes, content)
+        rel = dest.relative_to(root)
+        rel_dir = str(rel.parent).replace("\\", "/")
+        if rel_dir == ".":
+            rel_dir = ""
         return {
             "id": uuid.uuid4().hex[:12],
             "name": dest.name,
-            "path": str(dest.relative_to(base)).replace("\\", "/"),
+            "path": str(rel).replace("\\", "/"),
             "size_bytes": len(content),
             "modified_at": _now(),
             "ext": ext,
-            "dir": "generated",
+            "dir": rel_dir,
+            "source": source,
         }
 
     async def save_user_file(self, user_id: str, filename: str, content: bytes, mime_type: str = "") -> dict:
@@ -321,6 +342,12 @@ class WorkspaceManager:
                 result = await asyncio.to_thread(pdf_ocr.extract_text, file)
                 text = (result.get("text") or "").strip()
                 if not text:
+                    if result.get("source") == "empty":
+                        # 明确告诉模型/用户"读不出来"，而不是静默当成空文件
+                        return (
+                            "[这份 PDF 没有文字层，OCR 也没有识别出可用文字——可能是纯图片页或扫描质量太差。"
+                            "可以换一份文字版 PDF，或直接在中间预览里看图。]"
+                        )
                     return None
                 if result.get("source") in ("ocr", "ocr-partial"):
                     done = len(result.get("ocr_pages") or [])

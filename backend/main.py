@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from slowapi.middleware import SlowAPIMiddleware
 
 from deps import limiter
-from routers import session, chat, export, skills, settings_router, proxy, workspace, auth, admin, share, collab, literature
+from routers import session, chat, export, skills, settings_router, proxy, workspace, auth, admin, share, collab, literature, template_library
 
 
 @asynccontextmanager
@@ -106,6 +106,7 @@ app.include_router(collab.router)
 app.include_router(settings_router.router)
 app.include_router(workspace.router)
 app.include_router(literature.router)
+app.include_router(template_library.router)
 app.include_router(admin.router)
 
 

@@ -43,6 +43,7 @@ class SkillLoader:
         "academic-paper-reviewer": "同行评审",
         "academic-pipeline": "全流程管线",
         "kimi-cnki-search": "知网/CSSCI检索",
+        "ppt-maker": "PPT 生成",
     }
 
     # 技能图标映射 (emoji)
@@ -52,10 +53,20 @@ class SkillLoader:
         "academic-paper-reviewer": "clipboard",
         "academic-pipeline": "rocket",
         "kimi-cnki-search": "database",
+        "ppt-maker": "presentation",
     }
 
     # 各技能的模式定义（覆盖全部 25 种核心模式）
     MODES = {
+        "ppt-maker": [
+            {
+                "name": "make",
+                "display_name": "做 PPT",
+                "description": "读你点名的文件或材料，先给出逐页提纲与页数，确认后生成可编辑的 .pptx；可选模板库里的任意一套模板套风格",
+                "phases": ["读材料", "出提纲", "选模板", "生成 PPT"],
+                "estimated_time": "1-3分钟",
+            },
+        ],
         "deep-research": [
             {
                 "name": "full",

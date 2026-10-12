@@ -7,7 +7,7 @@ import * as pdfjs from 'pdfjs-dist'
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 import { attachPdfTextLayer, detachPdfTextLayers } from '@/utils/pdfTextSelection'
 import { renderMermaidBlocks } from '@/utils/mermaidBlocks'
-import { File, Download, ExternalLink, Loader2, Columns, Eye } from 'lucide-vue-next'
+import { File, Download, ExternalLink, Loader2, Columns, Eye, Presentation } from 'lucide-vue-next'
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerUrl
 
@@ -70,6 +70,10 @@ let pdfDoc: pdfjs.PDFDocumentProxy | null = null
 const draft = ref('')
 const htmlPreview = ref('')
 const mdPreviewHost = ref<HTMLElement | null>(null)
+// PPT：逐页文字（可在预览区就地修改后写回 .pptx）
+const pptSlides = ref<{ index: number; title: string; bullets: any[]; notes: string }[]>([])
+const pptSaving = ref(false)
+const pptLoaded = ref('')
 const loading = ref(false)
 const saving = ref(false)
 const previewing = ref(false)
@@ -94,13 +98,76 @@ const isHtml = computed(() => ext.value === '.html')
 const isDocx = computed(() => ['.docx'].includes(ext.value))
 const isXlsx = computed(() => ['.xlsx', '.xls'].includes(ext.value))
 const isArchive = computed(() => ['.zip', '.gz', '.parquet', '.feather'].includes(ext.value))
+const isPptx = computed(() => ext.value === '.pptx')
 
 const downloadUrl = computed(() => props.file ? api.getFileDownloadUrl(props.sessionId, props.file.path, props.source) : '')
 const previewUrl = computed(() => props.file ? api.getFilePreviewUrl(props.sessionId, props.file.path, props.source) : '')
 const pdfOpenUrl = computed(() => props.file ? api.getPdfOpenUrl(props.sessionId, props.file.path, props.source) : '')
-const canPreview = computed(() => isMarkdown.value || isCode.value || isCsv.value || isImage.value || isPdf.value || isDocx.value || isXlsx.value || isHtml.value)
+const canPreview = computed(() => isMarkdown.value || isCode.value || isCsv.value || isImage.value || isPdf.value || isDocx.value || isXlsx.value || isHtml.value || isPptx.value)
 const canEdit = computed(() => ['.md', '.txt', '.bib', '.tex', '.docx'].includes(ext.value))
 const dirty = computed(() => canEdit.value && draft.value !== content.value)
+
+// ── PPT 编辑（把预览区改过的文字写回 pptx）──
+function pptBulletsToText(bullets: any[]): string {
+  const lines: string[] = []
+  for (const b of bullets || []) {
+    if (b && typeof b === 'object') {
+      if (b.text) lines.push(String(b.text))
+      for (const c of b.children || []) lines.push('  ' + String(c))
+    } else if (b) {
+      lines.push(String(b))
+    }
+  }
+  return lines.join('\n')
+}
+
+function pptTextToBullets(text: string): any[] {
+  const out: any[] = []
+  for (const raw of (text || '').split('\n')) {
+    const line = raw.replace(/\s+$/, '')
+    if (!line.trim()) continue
+    if (/^\s{2,}/.test(line)) {
+      const child = line.trim()
+      if (out.length) out[out.length - 1].children.push(child)
+      else out.push({ text: child, children: [] })
+    } else {
+      out.push({ text: line.trim(), children: [] })
+    }
+  }
+  return out
+}
+
+async function loadPptx() {
+  if (!props.file) return
+  pptLoaded.value = ''
+  pptSlides.value = []
+  try {
+    const r = await api.getPptxSlides(props.sessionId, props.file.path, props.source)
+    pptSlides.value = (r.slides || []).map((s) => ({ ...s, bulletsText: pptBulletsToText(s.bullets) } as any))
+    pptLoaded.value = props.file.path
+  } catch (e: any) {
+    error.value = '这份 PPT 读不出来：' + (e.message || e)
+  }
+}
+
+async function savePptx() {
+  if (!props.file || pptSaving.value) return
+  pptSaving.value = true
+  try {
+    const payload = pptSlides.value.map((s: any) => ({
+      title: s.title || '',
+      bullets: pptTextToBullets(s.bulletsText || ''),
+      notes: s.notes || '',
+    }))
+    const r = await api.savePptxSlides(props.sessionId, props.file.path, payload, props.source)
+    toast.success(`已写回 ${r.slides} 页：${props.file.name}`)
+    await loadPptx()
+  } catch (e: any) {
+    toast.error(e.message || '写回失败')
+  } finally {
+    pptSaving.value = false
+  }
+}
 watch(dirty, (value) => emit('dirty', value))
 
 const langLabel = computed(() => {
@@ -299,6 +366,12 @@ async function loadContent() {
   loading.value = true; error.value = ''; content.value = ''; draft.value = ''; htmlPreview.value = ''
   previewing.value = false
   try {
+    if (isPptx.value) {
+      content.value = 'pptx'
+      loading.value = false
+      await loadPptx()
+      return
+    }
     if (isPdf.value) {
       const response = await fetch(pdfOpenUrl.value)
       if (!response.ok) {
@@ -439,6 +512,51 @@ onUnmounted(() => {
         <p v-if="pdfDrawn < pdfTotal" class="text-center text-[11px] font-ui text-ruc-text-dim py-2">正在打开第 {{ pdfDrawn + 1 }} 页</p>
       </div>
 
+      <!-- PPT：逐页文字，就地改完写回 pptx（版式与主题不动） -->
+      <div v-else-if="isPptx" class="flex-1 min-h-0 overflow-auto bg-[#e7e5e4] px-4 py-4">
+        <div class="mx-auto w-full max-w-3xl space-y-3">
+          <div class="flex items-center gap-2 rounded-xl border border-ruc-divider bg-white px-3 py-2">
+            <Presentation class="w-4 h-4 text-ruc-red/70 flex-shrink-0" />
+            <span class="text-[11px] font-ui text-ruc-text-dim">
+              这是 PowerPoint 文件，共 {{ pptSlides.length }} 页。改下面的文字后点「写回 PPT」，版式和主题不会变。
+            </span>
+            <button
+              class="ml-auto flex-shrink-0 px-2 py-1 rounded-md bg-ruc-red text-white text-[11px] font-ui disabled:opacity-50"
+              :disabled="pptSaving || !pptSlides.length"
+              @click="savePptx"
+            >
+              {{ pptSaving ? '写入中…' : '写回 PPT' }}
+            </button>
+          </div>
+
+          <div
+            v-for="(slide, i) in pptSlides"
+            :key="'ppt-' + i"
+            class="rounded-xl border border-ruc-divider bg-white p-3 shadow-sm"
+          >
+            <div class="flex items-center gap-2 mb-1">
+              <span class="text-[10px] font-ui text-ruc-text-light">第 {{ i + 1 }} 页</span>
+              <input
+                v-model="slide.title"
+                class="flex-1 min-w-0 rounded-md border border-ruc-divider px-2 py-1 text-sm font-ui font-semibold text-ruc-text"
+                placeholder="这一页的标题"
+              />
+            </div>
+            <textarea
+              v-model="slide.bulletsText"
+              rows="4"
+              class="w-full resize-y rounded-md border border-ruc-divider px-2 py-1 text-[12px] font-ui text-ruc-text leading-relaxed"
+              placeholder="每行一条要点；行首缩进两个空格表示下一级"
+            ></textarea>
+            <input
+              v-model="slide.notes"
+              class="mt-1 w-full rounded-md border border-ruc-divider px-2 py-1 text-[11px] font-ui text-ruc-text-dim"
+              placeholder="演讲备注（放映时看不到，讲的时候看得到）"
+            />
+          </div>
+        </div>
+      </div>
+
       <!-- XLSX: HTML。Word 走上面的编辑区。 -->
       <div v-else-if="isXlsx" class="p-4">
         <div class="flex items-center gap-2 mb-3">
@@ -486,6 +604,7 @@ onUnmounted(() => {
       <span>{{ ext.replace('.', '').toUpperCase() || 'FILE' }}</span>
       <span v-if="file.columns?.length">{{ file.columns.length }} 列</span>
       <span v-if="isPdf">{{ pdfTotal ? pdfTotal + ' 页 · ' : '' }}{{ pdfSize }} · {{ pdfHasText ? '文字可以选中' : '扫描图片，无法选中文字' }}<template v-if="pdfOcrLabel"> · {{ pdfOcrLabel }}</template></span>
+      <span v-else-if="isPptx">{{ pptSlides.length ? pptSlides.length + ' 页幻灯片 · ' : '' }}{{ pdfSize }} · 可直接改文字后写回</span>
       <span v-else>{{ ((canEdit ? draft.length : content.length) || htmlPreview.length || file.size_bytes).toLocaleString() }} 字符</span>
       <span v-if="isDocx">保存写回 Word，表格和图片仍留着</span>
       <span v-if="dirty" class="text-ruc-red">未保存</span>

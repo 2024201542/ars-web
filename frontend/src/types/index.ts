@@ -77,6 +77,7 @@ export interface Message {
   editsUndone?: boolean
   debate?: { voices: DebateVoice[] } | null
   debatePlan?: DebatePlan | null
+  ppt?: { name: string; path: string; dir?: string; pages?: number; model?: string; source?: string } | null
   debateHold?: { name: string; model?: string; round?: number; between?: boolean } | null
   pipeline?: {
     index: number
@@ -137,6 +138,38 @@ export interface Settings {
 export interface SSEEvent {
   event: string
   data: any
+}
+
+// ── PPT 模块（模板库）──
+
+export interface PptPreviewBox {
+  kind: 'title' | 'body'
+  x: number
+  y: number
+  w: number
+  h: number
+  size?: number | null
+  text?: string
+  chars?: number
+}
+
+export interface PptPreviewCard {
+  index: number
+  tag: string
+  boxes: PptPreviewBox[]
+  has_image?: boolean
+}
+
+export interface PptTemplate {
+  id: string
+  name: string
+  source: 'builtin' | 'user'
+  slides: number
+  tags: Record<string, number>
+  theme?: { accent?: string; fonts?: string[] }
+  slide_width?: number
+  slide_height?: number
+  preview?: PptPreviewCard[]
 }
 
 // ── Workspace types (session-scoped) ──

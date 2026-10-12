@@ -14,12 +14,29 @@ export interface FunctionGroup {
   modes: ComposerMode[]
 }
 
+/** 独立模块入口：点进去是一个单独页面，不走会话。 */
+export const MODULE_ENTRIES = [
+  {
+    key: 'ppt',
+    label: '模板库',
+    hint: '管理/预览 PPT 模板（做 PPT 在下面「PPT 生成」入口里）',
+    route: '/ppt',
+  },
+]
+
 export const DIRECT_ENTRIES = [
   { skill: 'agent', mode: 'agent', label: 'Agent', hint: '按你的话来做，需要时可以改左侧文稿' },
   { skill: 'chat', mode: 'chat', label: '聊天', hint: '只和已接入的模型说话' },
 ]
 
 export const FUNCTION_GROUPS: FunctionGroup[] = [
+  {
+    skill: 'ppt-maker',
+    label: 'PPT 生成',
+    modes: [
+      { mode: 'make', label: '做 PPT', hint: '读文件或材料 → 先出逐页提纲和页数 → 说一声就出片；可选模板' },
+    ],
+  },
   {
     skill: 'academic-pipeline',
     label: '全流程管线',

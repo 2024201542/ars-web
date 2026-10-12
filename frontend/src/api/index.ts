@@ -1,4 +1,4 @@
-import type { Session, SessionDetail, Skill, Mode, Settings, ModelInfo, ProviderInfo, WorkspaceFile, DebatePayload } from '@/types'
+import type { Session, SessionDetail, Skill, Mode, Settings, ModelInfo, ProviderInfo, WorkspaceFile, DebatePayload, PptTemplate } from '@/types'
 
 // 开发环境用 localhost:8000，部署时用相对路径 /api（由 nginx 反向代理）
 const BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api'
@@ -116,7 +116,7 @@ export const api = {
     request<Session>(`/sessions/${id}`, { method: 'PATCH', body: JSON.stringify({ skill_name: skill, mode_name: mode }) }),
 
   // Chat (SSE)
-  chatSSE: (sessionId: string, message: string, model?: string, openPath?: string, pipelineAction?: string, debateModels?: string[], debate?: DebatePayload) => {
+  chatSSE: (sessionId: string, message: string, model?: string, openPath?: string, pipelineAction?: string, debateModels?: string[], debate?: DebatePayload, attach?: { paths: string[]; source?: string; userText?: string; pptTemplateId?: string; pptPages?: number; pptAutoImage?: boolean }) => {
     const authHeaders = getAuthHeaders()
     const seats = debate?.seats || []
     return fetch(`${BASE_URL}/sessions/${sessionId}/chat`, {
@@ -127,6 +127,12 @@ export const api = {
         model,
         open_path: openPath || undefined,
         pipeline_action: pipelineAction || undefined,
+        attach_paths: attach?.paths && attach.paths.length ? attach.paths : undefined,
+        attach_source: attach?.source || undefined,
+        user_text: attach?.userText || undefined,
+        ppt_template_id: attach?.pptTemplateId || undefined,
+        ppt_pages: attach?.pptPages || undefined,
+        ppt_auto_image: attach?.pptAutoImage || undefined,
         debate_models: seats.length ? seats.map((item) => item.model) : (debateModels && debateModels.length ? debateModels : undefined),
         debate_seats: seats.length ? seats : undefined,
         debate_action: debate?.action || undefined,
@@ -298,6 +304,19 @@ export const api = {
     withAuthToken(`${BASE_URL}/workspace/files/download?session_id=${encodeURIComponent(sessionId)}&path=${encodeURIComponent(path)}${source && source !== 'site' ? `&source=${encodeURIComponent(source)}` : ''}`),
   getFilePreviewUrl: (sessionId: string, path: string, source?: string) =>
     withAuthToken(`${BASE_URL}/workspace/files/preview?session_id=${encodeURIComponent(sessionId)}&path=${encodeURIComponent(path)}${source && source !== 'site' ? `&source=${encodeURIComponent(source)}` : ''}`),
+  getPptxSlides: (sessionId: string, path: string, source?: string) =>
+    request<{ slides: { index: number; title: string; bullets: any[]; notes: string }[]; path: string }>(
+      `/workspace/files/pptx-slides?session_id=${encodeURIComponent(sessionId)}&path=${encodeURIComponent(path)}${source && source !== 'site' ? `&source=${encodeURIComponent(source)}` : ''}`),
+  savePptxSlides: (
+    sessionId: string,
+    path: string,
+    slides: { title: string; bullets: any[]; notes: string }[],
+    source?: string,
+  ) =>
+    request<{ ok: boolean; slides: number }>(
+      `/workspace/files/pptx-slides?session_id=${encodeURIComponent(sessionId)}&path=${encodeURIComponent(path)}${source && source !== 'site' ? `&source=${encodeURIComponent(source)}` : ''}`,
+      { method: 'PUT', body: JSON.stringify({ slides }) },
+    ),
   getPdfOcrProgress: (sessionId: string, path: string, source?: string) =>
     request<{ done: number; total: number; warming: boolean; needs_ocr: boolean; pending: number }>(
       `/workspace/files/pdf-ocr?session_id=${encodeURIComponent(sessionId)}&path=${encodeURIComponent(path)}${source && source !== 'site' ? `&source=${encodeURIComponent(source)}` : ''}`),
@@ -333,6 +352,80 @@ export const api = {
   ) =>
     request<WorkspaceFile & { format: string; source: string }>(
       `/workspace/generate-doc?session_id=${encodeURIComponent(sessionId)}`,
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
+  // ── PPT 模块（独立页面：模板库 + 选模板生成）──
+  listPptTemplates: () =>
+    request<{ templates: PptTemplate[]; count: number }>('/ppt/templates'),
+  getPptTemplate: (id: string) => request<any>(`/ppt/templates/${encodeURIComponent(id)}`),
+  listPptThemes: () => request<{ themes: any[]; default: string }>('/ppt/themes'),
+  uploadPptTemplate: (file: File) => {
+    const form = new FormData()
+    form.append('file', file)
+    return fetch(`${BASE_URL}/ppt/templates/upload`, {
+      method: 'POST',
+      headers: getAuthHeaders(),
+      body: form,
+    }).then(async (r) => {
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || `HTTP ${r.status}`)
+      return r.json() as Promise<PptTemplate>
+    })
+  },
+  deletePptTemplate: (id: string) =>
+    request<{ ok: boolean }>(`/ppt/templates/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  // ② 截图变模板：一张或多张幻灯片截图 → 一份模板
+  createPptTemplateFromScreenshot: (files: File[], name: string) => {
+    const form = new FormData()
+    files.forEach((f) => form.append('files', f))
+    return fetch(`${BASE_URL}/ppt/templates/from-screenshot?name=${encodeURIComponent(name)}`, {
+      method: 'POST',
+      headers: getAuthHeaders(),
+      body: form,
+    }).then(async (r) => {
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || `HTTP ${r.status}`)
+      return r.json() as Promise<PptTemplate & { report?: any }>
+    })
+  },
+  // 重建"整页图片化"的模板页（渲染 → 擦字 → 可编辑文本框 + 图片位）
+  rebuildTemplateImagePages: (id: string) =>
+    request<{ ok: boolean; rebuilt: number; texts?: number; photos?: number; message?: string }>(
+      `/ppt/templates/${encodeURIComponent(id)}/rebuild-image-pages`, { method: 'POST' }),
+  // ③ 视觉校正：让 qwen-vl 把"标题/正文/配图位"校正到位
+  visionRefineTemplate: (id: string, pages: number[] = [], model = 'qwen-vl-max') =>
+    request<{ ok: boolean; pages: number[]; refined: number; changed: number; results: any[] }>(
+      `/ppt/templates/${encodeURIComponent(id)}/vision-refine`,
+      { method: 'POST', body: JSON.stringify({ pages, model }) },
+    ),
+  // 注意：下面这几个 URL 会被 <img>/<a> 直接用，浏览器不会带 Authorization 头，
+  // 必须用 withAuthToken 把 token 放进查询参数（后端 get_user_id 支持 ?token= 回退），
+  // 否则图片一律 401，界面就会显示"渲染失败"。
+  getPptTemplateFileUrl: (id: string) => withAuthToken(`${BASE_URL}/ppt/templates/${encodeURIComponent(id)}/thumb`),
+  getPptTemplateThumbUrl: (id: string, page = 1) =>
+    withAuthToken(`${BASE_URL}/ppt/templates/${encodeURIComponent(id)}/thumb.png?page=${page}`),
+  getPptPageImageUrl: (path: string, page = 1) =>
+    withAuthToken(`${BASE_URL}/ppt/preview.png?path=${encodeURIComponent(path)}&page=${page}`),
+  getPptRenderStatus: () => request<{ available: boolean }>('/ppt/render/status'),
+  getPptFileUrl: (path: string) => withAuthToken(`${BASE_URL}/ppt/file?path=${encodeURIComponent(path)}`),
+  generatePpt: (body: {
+    material_text?: string
+    session_id?: string
+    message_ids?: number[]
+    template_id?: string
+    theme?: string
+    pages?: number
+    guidance?: string
+    model?: string
+    filename?: string
+    save_to_local?: boolean
+    auto_image?: boolean
+  }) => request<any>('/ppt/generate', { method: 'POST', body: JSON.stringify(body) }),
+
+  generateWorkspacePpt: (
+    sessionId: string,
+    body: { filename?: string; message_ids?: number[]; text?: string; model?: string; guidance?: string; pages?: number; template_path?: string; save_dir?: string },
+  ) =>
+    request<WorkspaceFile & { format: string; pages: number; model: string; outline_path: string; fallback: boolean }>(
+      `/workspace/generate-ppt?session_id=${encodeURIComponent(sessionId)}`,
       { method: 'POST', body: JSON.stringify(body) },
     ),
 }

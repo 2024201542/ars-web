@@ -15,10 +15,13 @@ export function useChatStream(getSessionId: () => string, emitDone: () => void) 
   const lastToolUse = ref('')
   // 辩论/辩题的实时流：模型正在写的那一段（逐字追加），结束后清空
   const liveStream = ref<{ key: string; kind: string; name: string; round: number; thinking: string; answer: string } | null>(null)
+  // 对话里直接生成的 PPT（用于刷新文件栏 + 弹提示）
+  const lastPpt = ref<any>(null)
 
   const statusText = computed(() => {
     if (lastToolUse.value) return `正在使用工具：${lastToolUse.value}`
     if (progressTokens.value > 0) return '正在写回答…'
+    if (progressPhase.value === 'reading') return '正在读取附件（扫描件会先做 OCR，可能要十几秒）…'
     if (progressPhase.value === 'init') return '正在启动…'
     return '正在连接模型…'
   })
@@ -37,7 +40,7 @@ export function useChatStream(getSessionId: () => string, emitDone: () => void) 
     return l && l.role === 'assistant' ? l : null
   }
 
-  async function sendMessage(msg: string, modelToUse?: string, openPath?: string, pipelineAction?: string, debateModels?: string[], debate?: DebatePayload) {
+  async function sendMessage(msg: string, modelToUse?: string, openPath?: string, pipelineAction?: string, debateModels?: string[], debate?: DebatePayload, attach?: { paths: string[]; source?: string; userText?: string; pptTemplateId?: string; pptPages?: number; pptAutoImage?: boolean }) {
     if (isStreaming.value) return
     isStreaming.value = true; resultContent.value = ''
     progressTokens.value = 0; progressPhase.value = ''; lastToolUse.value = ''
@@ -58,7 +61,7 @@ export function useChatStream(getSessionId: () => string, emitDone: () => void) 
 
     let last = Date.now()
     try {
-      const r = await api.chatSSE(getSessionId(), msg, modelToUse, openPath, pipelineAction, debateModels, debate)
+      const r = await api.chatSSE(getSessionId(), msg, modelToUse, openPath, pipelineAction, debateModels, debate, attach)
       if (!r.ok) {
         const e = await r.json().catch(()=>({detail:`${r.status}`}))
         // FastAPI 校验失败时 detail 是对象数组，直接拼接会变成 [object Object]
@@ -85,6 +88,11 @@ export function useChatStream(getSessionId: () => string, emitDone: () => void) 
         else if (pen.evt === 'pipeline' && l) { l.pipeline = d }
         else if (pen.evt === 'debate_topic' && l) { l.debatePlan = d }
         else if (pen.evt === 'literature' && l) { l.literature = d }
+        else if (pen.evt === 'ppt_created') {
+          // 对话里一句话生成的 PPT：挂到消息上，并通知外面刷新文件栏
+          if (l) (l as any).ppt = d
+          lastPpt.value = d
+        }
         else if (pen.evt === 'debate_pause' && l) { l.debateHold = d }
         else if (pen.evt === 'debate_stream') {
           // 这一位开始/结束写了；开始就先把空卡片挂出来，好让用户看到逐字增长
@@ -164,5 +172,5 @@ export function useChatStream(getSessionId: () => string, emitDone: () => void) 
     finally { isStreaming.value = false; emitDone() }
   }
 
-  return { isStreaming, resultContent, progressTokens, progressPhase, lastToolUse, statusText, liveStream, sendMessage, abort: ()=> { isStreaming.value = false } }
+  return { isStreaming, resultContent, progressTokens, progressPhase, lastToolUse, statusText, liveStream, lastPpt, sendMessage, abort: ()=> { isStreaming.value = false } }
 }

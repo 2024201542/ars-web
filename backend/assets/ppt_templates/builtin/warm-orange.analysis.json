@@ -1,0 +1,669 @@
+{
+  "id": "builtin-warm-orange",
+  "name": "暖橙（内置）",
+  "version": 2,
+  "source": "builtin",
+  "file": "warm-orange.pptx",
+  "slide_width": 13.333,
+  "slide_height": 7.5,
+  "theme": {
+    "accent": "C05621",
+    "text_color": "C05621",
+    "fonts": [
+      "微软雅黑"
+    ]
+  },
+  "specimens": [
+    {
+      "index": 0,
+      "tag": "cover",
+      "frames": [
+        {
+          "i": 0,
+          "kind": "title",
+          "x": 1.0,
+          "y": 1.55,
+          "w": 11.3,
+          "h": 1.7,
+          "size": 40,
+          "chars": 6,
+          "bullets": 1,
+          "lines": 1,
+          "text": "演示文稿标题"
+        },
+        {
+          "i": 1,
+          "kind": "body",
+          "x": 1.0,
+          "y": 3.25,
+          "w": 11.3,
+          "h": 0.9,
+          "size": 18,
+          "chars": 13,
+          "bullets": 1,
+          "lines": 1,
+          "text": "副标题：研究主题与核心结论"
+        },
+        {
+          "i": 2,
+          "kind": "body",
+          "x": 1.0,
+          "y": 6.35,
+          "w": 11.3,
+          "h": 0.6,
+          "size": 12,
+          "chars": 22,
+          "bullets": 1,
+          "lines": 1,
+          "text": "汇报人：XXX　　日期：2026 年 X 月"
+        }
+      ],
+      "title_i": 0,
+      "body_i": 1,
+      "body2_i": 2,
+      "bodies_i": [
+        1,
+        2
+      ],
+      "capacity": 1,
+      "has_image": false,
+      "images": [],
+      "image_i": null,
+      "image_ratio": null,
+      "image_usable": false,
+      "image_only": false,
+      "capacity_chars": 224,
+      "fragmented": 1,
+      "lines": 1
+    },
+    {
+      "index": 1,
+      "tag": "toc",
+      "frames": [
+        {
+          "i": 0,
+          "kind": "title",
+          "x": 0.7,
+          "y": 0.5,
+          "w": 12.0,
+          "h": 0.9,
+          "size": 28,
+          "chars": 4,
+          "bullets": 1,
+          "lines": 1,
+          "text": "汇报框架"
+        },
+        {
+          "i": 1,
+          "kind": "body",
+          "x": 1.0,
+          "y": 1.75,
+          "w": 11.3,
+          "h": 4.6,
+          "size": 18,
+          "chars": 59,
+          "bullets": 5,
+          "lines": 5,
+          "text": "▪ 一、研究背景与问题提出"
+        }
+      ],
+      "title_i": 0,
+      "body_i": 1,
+      "body2_i": null,
+      "bodies_i": [
+        1
+      ],
+      "capacity": 5,
+      "has_image": false,
+      "images": [],
+      "image_i": null,
+      "image_ratio": null,
+      "image_usable": false,
+      "image_only": false,
+      "capacity_chars": 540,
+      "fragmented": 0,
+      "lines": 5
+    },
+    {
+      "index": 2,
+      "tag": "bullets-3",
+      "frames": [
+        {
+          "i": 0,
+          "kind": "title",
+          "x": 0.7,
+          "y": 0.5,
+          "w": 12.0,
+          "h": 0.9,
+          "size": 26,
+          "chars": 11,
+          "bullets": 1,
+          "lines": 1,
+          "text": "一、研究背景与问题提出"
+        },
+        {
+          "i": 1,
+          "kind": "body",
+          "x": 1.0,
+          "y": 1.9,
+          "w": 11.3,
+          "h": 4.4,
+          "size": 18,
+          "chars": 55,
+          "bullets": 3,
+          "lines": 3,
+          "text": "▪ 要点一：把研究问题收成一句可检验的命题"
+        }
+      ],
+      "title_i": 0,
+      "body_i": 1,
+      "body2_i": null,
+      "bodies_i": [
+        1
+      ],
+      "capacity": 3,
+      "has_image": false,
+      "images": [],
+      "image_i": null,
+      "image_ratio": null,
+      "image_usable": false,
+      "image_only": false,
+      "capacity_chars": 540,
+      "fragmented": 0,
+      "lines": 3
+    },
+    {
+      "index": 3,
+      "tag": "bullets-5",
+      "frames": [
+        {
+          "i": 0,
+          "kind": "title",
+          "x": 0.7,
+          "y": 0.5,
+          "w": 12.0,
+          "h": 0.9,
+          "size": 26,
+          "chars": 11,
+          "bullets": 1,
+          "lines": 1,
+          "text": "二、已有讨论与理论框架"
+        },
+        {
+          "i": 1,
+          "kind": "body",
+          "x": 1.0,
+          "y": 1.8,
+          "w": 11.3,
+          "h": 4.8,
+          "size": 15,
+          "chars": 83,
+          "bullets": 5,
+          "lines": 5,
+          "text": "▪ 讨论一：所有权与国家关系的经典解释"
+        }
+      ],
+      "title_i": 0,
+      "body_i": 1,
+      "body2_i": null,
+      "bodies_i": [
+        1
+      ],
+      "capacity": 5,
+      "has_image": false,
+      "images": [],
+      "image_i": null,
+      "image_ratio": null,
+      "image_usable": false,
+      "image_only": false,
+      "capacity_chars": 810,
+      "fragmented": 0,
+      "lines": 5
+    },
+    {
+      "index": 4,
+      "tag": "two-col",
+      "frames": [
+        {
+          "i": 0,
+          "kind": "title",
+          "x": 0.7,
+          "y": 0.5,
+          "w": 12.0,
+          "h": 0.9,
+          "size": 26,
+          "chars": 9,
+          "bullets": 1,
+          "lines": 1,
+          "text": "三、两种解释的对照"
+        },
+        {
+          "i": 1,
+          "kind": "body",
+          "x": 1.15,
+          "y": 1.95,
+          "w": 5.0,
+          "h": 3.9,
+          "size": 18,
+          "chars": 31,
+          "bullets": 3,
+          "lines": 3,
+          "text": "既有解释"
+        },
+        {
+          "i": 2,
+          "kind": "body",
+          "x": 7.3,
+          "y": 1.95,
+          "w": 5.0,
+          "h": 3.9,
+          "size": 18,
+          "chars": 31,
+          "bullets": 3,
+          "lines": 3,
+          "text": "本文解释"
+        }
+      ],
+      "title_i": 0,
+      "body_i": 1,
+      "body2_i": 2,
+      "bodies_i": [
+        1,
+        2
+      ],
+      "capacity": 3,
+      "has_image": false,
+      "images": [],
+      "image_i": null,
+      "image_ratio": null,
+      "image_usable": false,
+      "image_only": false,
+      "capacity_chars": 400,
+      "fragmented": 0,
+      "lines": 3
+    },
+    {
+      "index": 5,
+      "tag": "bullets-2",
+      "frames": [
+        {
+          "i": 0,
+          "kind": "title",
+          "x": 0.7,
+          "y": 0.5,
+          "w": 12.0,
+          "h": 0.9,
+          "size": 26,
+          "chars": 4,
+          "bullets": 1,
+          "lines": 1,
+          "text": "关键数据"
+        },
+        {
+          "i": 1,
+          "kind": "body",
+          "x": 1.0,
+          "y": 2.15,
+          "w": 11.3,
+          "h": 1.8,
+          "size": 54,
+          "chars": 4,
+          "bullets": 1,
+          "lines": 1,
+          "text": "50 年"
+        },
+        {
+          "i": 2,
+          "kind": "body",
+          "x": 1.0,
+          "y": 4.3,
+          "w": 11.3,
+          "h": 0.9,
+          "size": 15,
+          "chars": 24,
+          "bullets": 1,
+          "lines": 1,
+          "text": "1949—1999：制度变迁的时间跨度与关键节点"
+        }
+      ],
+      "title_i": 0,
+      "body_i": 1,
+      "body2_i": 2,
+      "bodies_i": [
+        1,
+        2
+      ],
+      "capacity": 2,
+      "has_image": false,
+      "images": [],
+      "image_i": null,
+      "image_ratio": null,
+      "image_usable": false,
+      "image_only": false,
+      "capacity_chars": 123,
+      "fragmented": 0,
+      "lines": 1
+    },
+    {
+      "index": 6,
+      "tag": "quote",
+      "frames": [
+        {
+          "i": 0,
+          "kind": "title",
+          "x": 0.7,
+          "y": 0.5,
+          "w": 12.0,
+          "h": 0.9,
+          "size": 26,
+          "chars": 4,
+          "bullets": 1,
+          "lines": 1,
+          "text": "原文摘录"
+        },
+        {
+          "i": 1,
+          "kind": "body",
+          "x": 0.9,
+          "y": 2.3,
+          "w": 11.5,
+          "h": 2.6,
+          "size": 20,
+          "chars": 57,
+          "bullets": 1,
+          "lines": 1,
+          "text": "“如果不把国家及其代理人的行为引进来，就无法理解产权安排及其变迁，也无法解释为什"
+        }
+      ],
+      "title_i": 0,
+      "body_i": 1,
+      "body2_i": null,
+      "bodies_i": [
+        1
+      ],
+      "capacity": 1,
+      "has_image": false,
+      "images": [],
+      "image_i": null,
+      "image_ratio": null,
+      "image_usable": false,
+      "image_only": false,
+      "capacity_chars": 246,
+      "fragmented": 0,
+      "lines": 1
+    },
+    {
+      "index": 7,
+      "tag": "cards-3",
+      "frames": [
+        {
+          "i": 0,
+          "kind": "title",
+          "x": 0.7,
+          "y": 0.5,
+          "w": 12.0,
+          "h": 0.9,
+          "size": 26,
+          "chars": 6,
+          "bullets": 1,
+          "lines": 1,
+          "text": "三个要点并列"
+        },
+        {
+          "i": 1,
+          "kind": "body",
+          "x": 1.08,
+          "y": 2.1,
+          "w": 3.05,
+          "h": 3.5,
+          "size": 17,
+          "chars": 17,
+          "bullets": 2,
+          "lines": 2,
+          "text": "卡片 1"
+        },
+        {
+          "i": 2,
+          "kind": "body",
+          "x": 5.0,
+          "y": 2.1,
+          "w": 3.05,
+          "h": 3.5,
+          "size": 17,
+          "chars": 17,
+          "bullets": 2,
+          "lines": 2,
+          "text": "卡片 2"
+        },
+        {
+          "i": 3,
+          "kind": "body",
+          "x": 8.92,
+          "y": 2.1,
+          "w": 3.05,
+          "h": 3.5,
+          "size": 17,
+          "chars": 17,
+          "bullets": 2,
+          "lines": 2,
+          "text": "卡片 3"
+        }
+      ],
+      "title_i": 0,
+      "body_i": 1,
+      "body2_i": 2,
+      "bodies_i": [
+        1,
+        2,
+        3
+      ],
+      "capacity": 2,
+      "has_image": false,
+      "images": [],
+      "image_i": null,
+      "image_ratio": null,
+      "image_usable": false,
+      "image_only": false,
+      "capacity_chars": 360,
+      "fragmented": 0,
+      "lines": 2
+    },
+    {
+      "index": 8,
+      "tag": "timeline",
+      "frames": [
+        {
+          "i": 0,
+          "kind": "title",
+          "x": 0.7,
+          "y": 0.5,
+          "w": 12.0,
+          "h": 0.9,
+          "size": 26,
+          "chars": 9,
+          "bullets": 1,
+          "lines": 1,
+          "text": "制度变迁的三个节点"
+        },
+        {
+          "i": 1,
+          "kind": "body",
+          "x": 0.9,
+          "y": 2.25,
+          "w": 2.9,
+          "h": 3.1,
+          "size": 18,
+          "chars": 22,
+          "bullets": 2,
+          "lines": 2,
+          "text": "1949 年"
+        },
+        {
+          "i": 2,
+          "kind": "body",
+          "x": 3.9,
+          "y": 2.25,
+          "w": 2.9,
+          "h": 3.1,
+          "size": 18,
+          "chars": 22,
+          "bullets": 2,
+          "lines": 2,
+          "text": "1969 年"
+        },
+        {
+          "i": 3,
+          "kind": "body",
+          "x": 6.9,
+          "y": 2.25,
+          "w": 2.9,
+          "h": 3.1,
+          "size": 18,
+          "chars": 22,
+          "bullets": 2,
+          "lines": 2,
+          "text": "1989 年"
+        },
+        {
+          "i": 4,
+          "kind": "body",
+          "x": 9.9,
+          "y": 2.25,
+          "w": 2.9,
+          "h": 3.1,
+          "size": 18,
+          "chars": 22,
+          "bullets": 2,
+          "lines": 2,
+          "text": "2009 年"
+        }
+      ],
+      "title_i": 0,
+      "body_i": 1,
+      "body2_i": 2,
+      "bodies_i": [
+        1,
+        2,
+        3,
+        4
+      ],
+      "capacity": 2,
+      "has_image": false,
+      "images": [],
+      "image_i": null,
+      "image_ratio": null,
+      "image_usable": false,
+      "image_only": false,
+      "capacity_chars": 352,
+      "fragmented": 0,
+      "lines": 2
+    },
+    {
+      "index": 9,
+      "tag": "section",
+      "frames": [
+        {
+          "i": 0,
+          "kind": "title",
+          "x": 5.4,
+          "y": 3.05,
+          "w": 7.3,
+          "h": 1.4,
+          "size": 32,
+          "chars": 7,
+          "bullets": 1,
+          "lines": 1,
+          "text": "四、结论与讨论"
+        }
+      ],
+      "title_i": 0,
+      "body_i": null,
+      "body2_i": null,
+      "bodies_i": [],
+      "capacity": 0,
+      "has_image": false,
+      "images": [],
+      "image_i": null,
+      "image_ratio": null,
+      "image_usable": false,
+      "image_only": false,
+      "capacity_chars": 0,
+      "fragmented": 0,
+      "lines": 0
+    },
+    {
+      "index": 10,
+      "tag": "end",
+      "frames": [
+        {
+          "i": 0,
+          "kind": "title",
+          "x": 1.0,
+          "y": 2.9,
+          "w": 11.3,
+          "h": 1.4,
+          "size": 40,
+          "chars": 2,
+          "bullets": 1,
+          "lines": 1,
+          "text": "谢谢"
+        },
+        {
+          "i": 1,
+          "kind": "body",
+          "x": 1.0,
+          "y": 4.6,
+          "w": 11.3,
+          "h": 0.8,
+          "size": 15,
+          "chars": 5,
+          "bullets": 1,
+          "lines": 1,
+          "text": "请批评指正"
+        }
+      ],
+      "title_i": 0,
+      "body_i": 1,
+      "body2_i": null,
+      "bodies_i": [
+        1
+      ],
+      "capacity": 1,
+      "has_image": false,
+      "images": [],
+      "image_i": null,
+      "image_ratio": null,
+      "image_usable": false,
+      "image_only": false,
+      "capacity_chars": 108,
+      "fragmented": 0,
+      "lines": 1
+    }
+  ],
+  "manual_roles": {
+    "cover": 1,
+    "end": 11,
+    "toc": 2,
+    "two-col": 5,
+    "quote": 7,
+    "cards-3": 8,
+    "section": 10,
+    "content": 9
+  },
+  "stats": {
+    "slides": 11,
+    "tags": {
+      "cover": 1,
+      "toc": 1,
+      "bullets-3": 1,
+      "bullets-5": 1,
+      "two-col": 1,
+      "bullets-2": 1,
+      "quote": 1,
+      "cards-3": 1,
+      "timeline": 1,
+      "section": 1,
+      "end": 1
+    }
+  }
+}
