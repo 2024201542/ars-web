@@ -641,7 +641,7 @@ async def pptx_slides(
     if not fp or fp.suffix.lower() != ".pptx":
         raise HTTPException(status_code=404, detail="文件不存在")
     try:
-        from services.pptx_edit import read_slides
+        from services.ppt.pptx_edit import read_slides
 
         slides = await asyncio.to_thread(read_slides, fp)
     except Exception as exc:
@@ -669,7 +669,7 @@ async def update_pptx_slides(
     if not req.slides:
         raise HTTPException(status_code=400, detail="没有要写入的页")
     try:
-        from services.pptx_edit import write_slides
+        from services.ppt.pptx_edit import write_slides
 
         changed = await asyncio.to_thread(write_slides, fp, req.slides)
     except Exception as exc:
@@ -689,7 +689,7 @@ async def generate_ppt(
     save_dir 给了就写到那个目录（用于"放到附件所在文件夹"），否则进 generated/。
     """
     await _verify_session(session_id, user_id)
-    from services import ppt_chat
+    from services.ppt import ppt_chat
 
     session = await state_tracker.get_session(session_id)
     messages = await state_tracker.get_messages(session_id)

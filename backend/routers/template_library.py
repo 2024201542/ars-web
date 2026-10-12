@@ -1,7 +1,7 @@
 """PPT 模块接口：模板库（内置 + 用户上传）、真实缩略图、选模板生成。
 
-模板库的目录/解析/挑选逻辑都在 `services/ppt_library.py`，
-和"对话框里一句生成 PPT"（`services/ppt_chat.py`）共用同一套，避免两边行为不一致。
+模板库的目录/解析/挑选逻辑都在 `services/ppt/ppt_library.py`，
+和"对话框里一句生成 PPT"（`services/ppt/ppt_chat.py`）共用同一套，避免两边行为不一致。
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from services import ppt_chat, ppt_library, ppt_template, ppt_theme, pptx_render, pptx_splice
+from services.ppt import ppt_chat, ppt_library, ppt_template, ppt_theme, pptx_render, pptx_splice
 from services.user_manager import get_user_id
 from services.workspace_manager import user_dir, workspace_manager
 
@@ -30,7 +30,7 @@ async def rebuild_image_pages(template_id: str, user_id: str = Depends(get_user_
 
     这些页原本一个字都改不了（设计稿是图片）。重建后就地替换原页，模板仍是同一套风格。
     """
-    from services import ppt_shot
+    from services.ppt import ppt_shot
 
     item = ppt_library.find(user_id, template_id)
     if not item or not item.get("file_path"):
@@ -72,7 +72,7 @@ async def template_from_screenshot(files: list[UploadFile] = File(...),
 
     OCR 认字 → 擦掉原文字得到干净底图 → 在文字原位加可编辑文本框、给照片区加图片占位。
     """
-    from services import ppt_shot
+    from services.ppt import ppt_shot
 
     if not files:
         raise HTTPException(status_code=400, detail="请上传至少一张截图")
@@ -120,7 +120,7 @@ async def template_vision_refine(template_id: str, req: VisionRefineRequest,
 
     只对用户模板生效（内置模板本来就是按同一套规则生成的，不需要）。
     """
-    from services import ppt_vision
+    from services.ppt import ppt_vision
 
     item = ppt_library.find(user_id, template_id)
     if not item or not item.get("file_path"):

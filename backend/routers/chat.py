@@ -33,7 +33,7 @@ async def _static_reply(text: str):
 
 async def _ppt_reply(session_id: str, user_id: str, req, messages: list[dict]):
     """对话框里说一句要 PPT，就直接生成 .pptx 并放到附件所在文件夹。"""
-    from services import ppt_chat
+    from services.ppt import ppt_chat
     from services.workspace_manager import workspace_manager
 
     async def workspace_manager_resolve(uid: str, rel: str, source: str):
@@ -61,7 +61,7 @@ async def _ppt_reply(session_id: str, user_id: str, req, messages: list[dict]):
         save_dir = await workspace_manager.get_local_root(user_id)
 
     # 配图素材：附件里"是图片"的当配图；附了 PDF 就顺手把里面的图表抽出来当配图候选
-    from services import ppt_image
+    from services.ppt import ppt_image
 
     image_paths: list[str] = []
     for raw in paths:
@@ -293,7 +293,7 @@ async def chat(request: Request, session_id: str, req: ChatRequest, user_id: str
     ppt_job = False
     ppt_info: dict | None = None
     if not lit_text and skill_name not in {"idea-debate", "academic-pipeline"}:
-        from services.ppt_chat import wants_ppt
+        from services.ppt.ppt_chat import wants_ppt
 
         check_text = (getattr(req, "user_text", "") or "").strip()
         if not check_text:
