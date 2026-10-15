@@ -249,7 +249,8 @@ def build_pptx(outline: dict, template_path: Optional[pathlib.Path] = None) -> b
 
     buf = io.BytesIO()
     prs.save(buf)
-    return buf.getvalue()
+    from services.ppt.pptx_splice import sync_app_bytes
+    return sync_app_bytes(buf.getvalue())
 
 
 def outline_from_markdown(text: str, title: str = "") -> dict:

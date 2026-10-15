@@ -133,6 +133,7 @@ export interface Settings {
   model: string
   providers: ProviderInfo[]
   anthropic_key_configured: boolean
+  ppt_review_enabled?: boolean
 }
 
 export interface SSEEvent {
@@ -170,6 +171,7 @@ export interface PptTemplate {
   slide_width?: number
   slide_height?: number
   preview?: PptPreviewCard[]
+  pages_status?: 'none' | 'running' | 'done' | 'stale' | 'partial' | string
 }
 
 // ── Workspace types (session-scoped) ──

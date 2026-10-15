@@ -55,7 +55,42 @@ EMU_PER_INCH = 914400
 # 解析结果的版本号：新增字段（如"图片位"）时 +1。
 # 读取时会检查，旧版本自动重新解析——避免"老模板缺新字段"导致功能悄悄失效（踩过一次：
 # 图片位功能上了以后，模板库里已有的 analysis.json 没有 image_i，配图一直不生效）。
-ANALYSIS_VERSION = 2
+ANALYSIS_VERSION = 3
+
+
+def iter_text_shapes(container) -> list:
+    """先取顶层文本框，再补组合内部的。
+
+    顶层序号保持不变，旧的 title_i 仍然指向同一个框。组合里的框排在后面。
+    子形状的坐标用 python-pptx 给出的值，不再叠加组合原点。
+    """
+    from pptx.enum.shapes import MSO_SHAPE_TYPE
+
+    top: list = []
+    nested: list = []
+
+    def walk(shape) -> None:
+        try:
+            grouped = shape.shape_type == MSO_SHAPE_TYPE.GROUP
+        except Exception:
+            grouped = False
+        if grouped:
+            for child in shape.shapes:
+                walk(child)
+            return
+        if is_text_candidate(shape):
+            nested.append(shape)
+
+    for shape in container.shapes:
+        try:
+            grouped = shape.shape_type == MSO_SHAPE_TYPE.GROUP
+        except Exception:
+            grouped = False
+        if grouped:
+            walk(shape)
+        elif is_text_candidate(shape):
+            top.append(shape)
+    return top + nested
 
 
 def is_text_candidate(shape) -> bool:
@@ -135,6 +170,7 @@ def _frame_info(shape, order: int) -> Optional[dict]:
         "bullets": len([t for t in non_empty]),
         "lines": len(non_empty),
         "text": (non_empty[0] if non_empty else "")[:40],
+        "shape_id": getattr(shape, "shape_id", None),
     }
 
 
@@ -388,7 +424,7 @@ def analyze_pptx(path: str | pathlib.Path, *, tid: str = "", name: str = "", sou
     for index, slide in enumerate(prs.slides):
         frames: list[dict] = []
         order = 0
-        for shape in slide.shapes:
+        for shape in iter_text_shapes(slide):
             info = _frame_info(shape, order)
             if info is not None:
                 frames.append(info)

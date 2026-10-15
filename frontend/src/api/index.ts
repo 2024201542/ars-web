@@ -116,7 +116,7 @@ export const api = {
     request<Session>(`/sessions/${id}`, { method: 'PATCH', body: JSON.stringify({ skill_name: skill, mode_name: mode }) }),
 
   // Chat (SSE)
-  chatSSE: (sessionId: string, message: string, model?: string, openPath?: string, pipelineAction?: string, debateModels?: string[], debate?: DebatePayload, attach?: { paths: string[]; source?: string; userText?: string; pptTemplateId?: string; pptPages?: number; pptAutoImage?: boolean }) => {
+  chatSSE: (sessionId: string, message: string, model?: string, openPath?: string, pipelineAction?: string, debateModels?: string[], debate?: DebatePayload, attach?: { paths: string[]; source?: string; userText?: string; pptTemplateId?: string; pptPages?: number; pptAutoImage?: boolean; currentPage?: number }) => {
     const authHeaders = getAuthHeaders()
     const seats = debate?.seats || []
     return fetch(`${BASE_URL}/sessions/${sessionId}/chat`, {
@@ -133,6 +133,7 @@ export const api = {
         ppt_template_id: attach?.pptTemplateId || undefined,
         ppt_pages: attach?.pptPages || undefined,
         ppt_auto_image: attach?.pptAutoImage || undefined,
+        current_page: attach?.currentPage || undefined,
         debate_models: seats.length ? seats.map((item) => item.model) : (debateModels && debateModels.length ? debateModels : undefined),
         debate_seats: seats.length ? seats : undefined,
         debate_action: debate?.action || undefined,
@@ -391,21 +392,52 @@ export const api = {
     request<{ ok: boolean; rebuilt: number; texts?: number; photos?: number; message?: string }>(
       `/ppt/templates/${encodeURIComponent(id)}/rebuild-image-pages`, { method: 'POST' }),
   // ③ 视觉校正：让 qwen-vl 把"标题/正文/配图位"校正到位
-  visionRefineTemplate: (id: string, pages: number[] = [], model = 'qwen-vl-max') =>
+  visionRefineTemplate: (id: string, pages: number[] = [], model = 'qwen3-vl-plus') =>
     request<{ ok: boolean; pages: number[]; refined: number; changed: number; results: any[] }>(
       `/ppt/templates/${encodeURIComponent(id)}/vision-refine`,
       { method: 'POST', body: JSON.stringify({ pages, model }) },
     ),
+  parsePptTemplate: (id: string, body: { force?: boolean; pages?: number[]; model?: string; text_model?: string } = {}) =>
+    request<{ job_id: string; total: number }>(
+      `/ppt/templates/${encodeURIComponent(id)}/parse`,
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
+  getPptTemplateParse: (id: string) =>
+    request<{ status: string; done: number; total: number; current_page: number; errors: { page: number; error: string }[]; job_id: string }>(
+      `/ppt/templates/${encodeURIComponent(id)}/parse`),
+  getPptTemplatePages: (id: string) => request<any>(`/ppt/templates/${encodeURIComponent(id)}/pages`),
+  putPptTemplatePages: (id: string, body: { pages?: any[]; deck?: { summary?: string } }) =>
+    request<any>(`/ppt/templates/${encodeURIComponent(id)}/pages`, { method: 'PUT', body: JSON.stringify(body) }),
+  getPptTemplatePagesExportUrl: (id: string, format: 'json' | 'md') =>
+    withAuthToken(`${BASE_URL}/ppt/templates/${encodeURIComponent(id)}/pages/export?format=${format}`),
+  importPptTemplatePages: (id: string, file: File) => {
+    const form = new FormData()
+    form.append('file', file)
+    return fetch(`${BASE_URL}/ppt/templates/${encodeURIComponent(id)}/pages/import`, {
+      method: 'POST',
+      headers: getAuthHeaders(),
+      body: form,
+    }).then(async (r) => {
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || `HTTP ${r.status}`)
+      return r.json() as Promise<{ ok: boolean; imported: number; skipped: number[]; warnings: string[] }>
+    })
+  },
+  savePptTemplatePagesLocal: (id: string) =>
+    request<{ json: string; markdown: string; source: string }>(
+      `/ppt/templates/${encodeURIComponent(id)}/pages/save-local`, { method: 'POST' }),
   // 注意：下面这几个 URL 会被 <img>/<a> 直接用，浏览器不会带 Authorization 头，
   // 必须用 withAuthToken 把 token 放进查询参数（后端 get_user_id 支持 ?token= 回退），
   // 否则图片一律 401，界面就会显示"渲染失败"。
   getPptTemplateFileUrl: (id: string) => withAuthToken(`${BASE_URL}/ppt/templates/${encodeURIComponent(id)}/thumb`),
   getPptTemplateThumbUrl: (id: string, page = 1) =>
     withAuthToken(`${BASE_URL}/ppt/templates/${encodeURIComponent(id)}/thumb.png?page=${page}`),
-  getPptPageImageUrl: (path: string, page = 1) =>
-    withAuthToken(`${BASE_URL}/ppt/preview.png?path=${encodeURIComponent(path)}&page=${page}`),
+  getPptPageImageUrl: (path: string, page = 1, source = '', rev: string | number = '', version = 0) =>
+    withAuthToken(`${BASE_URL}/ppt/preview.png?path=${encodeURIComponent(path)}&page=${page}${source ? `&source=${encodeURIComponent(source)}` : ''}${rev ? `&v=${encodeURIComponent(String(rev))}` : ''}${version ? `&version=${version}` : ''}`),
+  getPptBasePreviewUrl: (id: string, page = 1) =>
+    withAuthToken(`${BASE_URL}/ppt/templates/${encodeURIComponent(id)}/base/preview?page=${page}`),
   getPptRenderStatus: () => request<{ available: boolean }>('/ppt/render/status'),
-  getPptFileUrl: (path: string) => withAuthToken(`${BASE_URL}/ppt/file?path=${encodeURIComponent(path)}`),
+  getPptFileUrl: (path: string, source = '') =>
+    withAuthToken(`${BASE_URL}/ppt/file?path=${encodeURIComponent(path)}${source ? `&source=${encodeURIComponent(source)}` : ''}`),
   generatePpt: (body: {
     material_text?: string
     session_id?: string
@@ -419,6 +451,69 @@ export const api = {
     save_to_local?: boolean
     auto_image?: boolean
   }) => request<any>('/ppt/generate', { method: 'POST', body: JSON.stringify(body) }),
+
+  // ── 计划 → 出片（新引擎：对话里先列计划，确认后再出片）──
+  listPptLayouts: () =>
+    request<{ specs: Record<string, any>; limits: Record<string, Record<string, number>> }>('/ppt/layouts'),
+  makePptPlan: (body: {
+    material_text?: string
+    session_id?: string
+    message_ids?: number[]
+    pages?: number
+    guidance?: string
+    model?: string
+  }) => request<{ plan: any; model: string }>('/ppt/plan', { method: 'POST', body: JSON.stringify(body) }),
+  readPptPlan: (path: string, source = '') =>
+    request<{ plan: any; plan_path: string; source?: string }>(
+      `/ppt/plan?path=${encodeURIComponent(path)}${source ? `&source=${encodeURIComponent(source)}` : ''}`),
+  revisePptPlan: (body: { plan_path: string; source?: string; instruction: string; model?: string }) =>
+    request<{ plan: any; issues?: any[] }>('/ppt/plan/revise', {
+      method: 'POST', body: JSON.stringify(body),
+    }),
+  savePptPlan: (body: { plan_path: string; source?: string; plan: any }) =>
+    request<{ plan: any; plan_path: string; source?: string; issues?: any[] }>('/ppt/plan', {
+      method: 'PUT', body: JSON.stringify(body),
+    }),
+  repickPptPlan: (body: { plan_path: string; source?: string; slide: number; page?: number; template_id?: string }) =>
+    request<{ plan?: any; plan_path?: string; source?: string; candidates?: any[]; slide: number }>(
+      '/ppt/plan/repick', { method: 'POST', body: JSON.stringify(body) }),
+  composePpt: (body: {
+    plan_path: string
+    source?: string
+    template_id?: string
+    filename?: string
+    save_to_local?: boolean
+    plan?: any
+  }) => request<{
+    path: string; source?: string; name: string; dir: string; pages: number
+    overflow: any[]; warnings: any[]; issues: any[]; template: string; template_id: string
+    base_confirmed?: boolean
+    repaired?: { pulled: number; removed: number }
+    template_pages?: number[]
+    thumbs: { page: number }[]
+  }>('/ppt/compose', { method: 'POST', body: JSON.stringify(body) }),
+  editPpt: (body: { plan_path: string; source?: string; instruction: string; page?: number | null; model?: string }) =>
+    request<{
+      plan_path: string; path: string; source: string; rev: number; version: number
+      ops: any[]; changes: { page: number; what: string }[]; changed_pages: number[]
+      issues: any[]; reply: string
+    }>('/ppt/edit', { method: 'POST', body: JSON.stringify(body) }),
+  undoPptEdit: (body: { path: string; source?: string; version?: number | null }) =>
+    request<{ version: number; rev: number; issues: any[] }>('/ppt/edit/undo', {
+      method: 'POST', body: JSON.stringify(body),
+    }),
+  getPptEditHistory: (path: string, source = '') =>
+    request<{ versions: any[] }>(
+      `/ppt/edit/history?path=${encodeURIComponent(path)}${source ? `&source=${encodeURIComponent(source)}` : ''}`),
+  repairPpt: (body: { path: string; source?: string }) =>
+    request<{ path: string; source?: string; issues: any[]; repaired: { pulled: number; removed: number }; rev: number }>(
+      '/ppt/repair', { method: 'POST', body: JSON.stringify(body) }),
+  getPptTemplateBase: (id: string) =>
+    request<{ base: any; template: string }>(`/ppt/templates/${encodeURIComponent(id)}/base`),
+  putPptTemplateBase: (id: string, base: any) =>
+    request<{ ok: boolean; base: any }>(`/ppt/templates/${encodeURIComponent(id)}/base`, {
+      method: 'PUT', body: JSON.stringify({ base }),
+    }),
 
   generateWorkspacePpt: (
     sessionId: string,

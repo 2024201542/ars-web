@@ -1,0 +1,661 @@
+{
+  "version": 1,
+  "template_id": "builtin-academy-blue",
+  "template_name": "academy-blue",
+  "template_sha1": "bc6bc61ba83c",
+  "analysis_version": 3,
+  "slide_size": [
+    13.333,
+    7.5
+  ],
+  "page_count": 11,
+  "parsed_at": "2026-10-14T23:25:10",
+  "models": {
+    "vision": "qwen3-vl-plus",
+    "text": ""
+  },
+  "prompt_version": 1,
+  "parse": {
+    "status": "done",
+    "done": 11,
+    "total": 11,
+    "current_page": 11,
+    "errors": []
+  },
+  "deck": {
+    "summary": "这是一套学术报告型演示模板，采用章节-内容-致谢的经典结构，适合开题、答辩或论文汇报等正式学术场合。",
+    "template_storyline": [
+      {
+        "heading": "演示文稿标题",
+        "role": "hook",
+        "pages": [
+          1
+        ]
+      },
+      {
+        "heading": "汇报框架",
+        "role": "summary",
+        "pages": [
+          2
+        ]
+      },
+      {
+        "heading": "一、研究背景与问题提出",
+        "role": "background",
+        "pages": [
+          3
+        ]
+      },
+      {
+        "heading": "二、已有讨论与理论框架",
+        "role": "literature",
+        "pages": [
+          4
+        ]
+      },
+      {
+        "heading": "三、两种解释的对照",
+        "role": "comparison",
+        "pages": [
+          5
+        ]
+      },
+      {
+        "heading": "关键数据",
+        "role": "data",
+        "pages": [
+          6
+        ]
+      },
+      {
+        "heading": "原文摘录",
+        "role": "theory",
+        "pages": [
+          7
+        ]
+      },
+      {
+        "heading": "三个要点并列",
+        "role": "concept",
+        "pages": [
+          8
+        ]
+      },
+      {
+        "heading": "制度变迁的三个节点",
+        "role": "case",
+        "pages": [
+          9
+        ]
+      },
+      {
+        "heading": "四、结论与讨论",
+        "role": "conclusion",
+        "pages": [
+          10
+        ]
+      },
+      {
+        "heading": "谢谢",
+        "role": "conclusion",
+        "pages": [
+          11
+        ]
+      }
+    ],
+    "functional": {
+      "cover": [
+        1
+      ],
+      "toc": [
+        2
+      ],
+      "content": [
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9
+      ],
+      "section": [
+        10
+      ],
+      "end": [
+        11
+      ]
+    },
+    "variant_groups": [],
+    "suggested_base": {
+      "cover": 1,
+      "section": 10,
+      "content": 5,
+      "end": 11
+    },
+    "deck_type_hint": "research_talk"
+  },
+  "pages": [
+    {
+      "page": 1,
+      "kind": "functional",
+      "role": "cover",
+      "form": "text",
+      "narrative_fit": [
+        "hook"
+      ],
+      "description": "封面页，含主标题、副标题与汇报人信息，用于开场介绍主题与结论。",
+      "sample_heading": "演示文稿标题",
+      "repeat": 0,
+      "slots": [
+        {
+          "name": "title",
+          "frame": 0,
+          "shape_id": 4,
+          "max_chars": 32,
+          "max_lines": 2,
+          "font_pt": 40,
+          "required": true,
+          "grow_w": 11.83
+        },
+        {
+          "name": "subtitle",
+          "frame": 1,
+          "shape_id": 5,
+          "max_chars": 76,
+          "max_lines": 2,
+          "font_pt": 18,
+          "required": false
+        }
+      ],
+      "decor": [
+        {
+          "frame": 2,
+          "shape_id": 6,
+          "action": "keep",
+          "text": "汇报人：XXX　　日期：2026 年 X 月"
+        }
+      ],
+      "images": [],
+      "variant_group": 0,
+      "usable": true,
+      "unusable_reason": "",
+      "vision_ok": true,
+      "user_edited": false,
+      "parse_warnings": []
+    },
+    {
+      "page": 2,
+      "kind": "functional",
+      "role": "toc",
+      "form": "bullets",
+      "narrative_fit": [
+        "background",
+        "question",
+        "method",
+        "finding"
+      ],
+      "description": "标题为‘汇报框架’，下方列出五项带编号的汇报结构要点，适合目录页展示整体逻辑脉络。",
+      "sample_heading": "汇报框架",
+      "repeat": 0,
+      "slots": [
+        {
+          "name": "title",
+          "frame": 0,
+          "shape_id": 3,
+          "max_chars": 22,
+          "max_lines": 1,
+          "font_pt": 28,
+          "required": true
+        },
+        {
+          "name": "body",
+          "frame": 1,
+          "shape_id": 4,
+          "max_chars": 497,
+          "max_lines": 13,
+          "font_pt": 18,
+          "required": true
+        }
+      ],
+      "decor": [],
+      "images": [],
+      "variant_group": 0,
+      "usable": true,
+      "unusable_reason": "",
+      "vision_ok": true,
+      "user_edited": false,
+      "parse_warnings": []
+    },
+    {
+      "page": 3,
+      "kind": "content",
+      "role": "content",
+      "form": "bullets",
+      "narrative_fit": [
+        "background",
+        "question"
+      ],
+      "description": "标题为研究背景与问题提出，下方三点式要点列述问题提炼、材料范围与缺口，适合讲研究起点。",
+      "sample_heading": "一、研究背景与问题提出",
+      "repeat": 0,
+      "slots": [
+        {
+          "name": "section_title",
+          "frame": 0,
+          "shape_id": 3,
+          "max_chars": 25,
+          "max_lines": 1,
+          "font_pt": 26,
+          "required": true
+        },
+        {
+          "name": "body",
+          "frame": 1,
+          "shape_id": 5,
+          "max_chars": 497,
+          "max_lines": 13,
+          "font_pt": 18,
+          "required": true
+        }
+      ],
+      "decor": [],
+      "images": [],
+      "variant_group": 0,
+      "usable": true,
+      "unusable_reason": "",
+      "vision_ok": true,
+      "user_edited": false,
+      "parse_warnings": []
+    },
+    {
+      "page": 4,
+      "kind": "content",
+      "role": "content",
+      "form": "bullets",
+      "narrative_fit": [
+        "literature",
+        "theory"
+      ],
+      "description": "标题为二级章节名，下方列出五个带项目符号的讨论要点，适合展开理论框架与已有研究综述。",
+      "sample_heading": "二、已有讨论与理论框架",
+      "repeat": 0,
+      "slots": [
+        {
+          "name": "section_title",
+          "frame": 0,
+          "shape_id": 3,
+          "max_chars": 25,
+          "max_lines": 1,
+          "font_pt": 26,
+          "required": true
+        },
+        {
+          "name": "body",
+          "frame": 1,
+          "shape_id": 5,
+          "max_chars": 780,
+          "max_lines": 17,
+          "font_pt": 15,
+          "required": true
+        }
+      ],
+      "decor": [],
+      "images": [],
+      "variant_group": 0,
+      "usable": true,
+      "unusable_reason": "",
+      "vision_ok": true,
+      "user_edited": false,
+      "parse_warnings": []
+    },
+    {
+      "page": 5,
+      "kind": "content",
+      "role": "content",
+      "form": "compare",
+      "narrative_fit": [
+        "comparison",
+        "finding"
+      ],
+      "description": "左右两栏对比两种解释，每栏含标题与两点说明，适合呈现观点对照。",
+      "sample_heading": "三、两种解释的对照",
+      "repeat": 2,
+      "slots": [
+        {
+          "name": "title",
+          "frame": 0,
+          "shape_id": 3,
+          "max_chars": 25,
+          "max_lines": 1,
+          "font_pt": 26,
+          "required": true
+        },
+        {
+          "name": "item1.head",
+          "frame": 1,
+          "shape_id": 5,
+          "max_chars": 205,
+          "max_lines": 11,
+          "font_pt": 18,
+          "required": true,
+          "grow_w": 5.72
+        },
+        {
+          "name": "item2.head",
+          "frame": 2,
+          "shape_id": 7,
+          "max_chars": 205,
+          "max_lines": 11,
+          "font_pt": 18,
+          "required": true,
+          "grow_w": 5.53
+        }
+      ],
+      "decor": [],
+      "images": [],
+      "variant_group": 0,
+      "usable": true,
+      "unusable_reason": "",
+      "vision_ok": true,
+      "user_edited": false,
+      "parse_warnings": []
+    },
+    {
+      "page": 6,
+      "kind": "content",
+      "role": "content",
+      "form": "bignum",
+      "narrative_fit": [
+        "background",
+        "significance"
+      ],
+      "description": "大字号突出‘50年’核心数据，辅以标题与时间跨度说明，适合强调历史跨度背景",
+      "sample_heading": "关键数据",
+      "repeat": 0,
+      "slots": [
+        {
+          "name": "title",
+          "frame": 0,
+          "shape_id": 3,
+          "max_chars": 25,
+          "max_lines": 1,
+          "font_pt": 26,
+          "required": true
+        },
+        {
+          "name": "stat1.value",
+          "frame": 1,
+          "shape_id": 4,
+          "max_chars": 12,
+          "max_lines": 1,
+          "font_pt": 54,
+          "required": false
+        },
+        {
+          "name": "stat1.label",
+          "frame": 2,
+          "shape_id": 5,
+          "max_chars": 137,
+          "max_lines": 3,
+          "font_pt": 15,
+          "required": false
+        }
+      ],
+      "decor": [],
+      "images": [],
+      "variant_group": 0,
+      "usable": true,
+      "unusable_reason": "",
+      "vision_ok": true,
+      "user_edited": false,
+      "parse_warnings": []
+    },
+    {
+      "page": 7,
+      "kind": "content",
+      "role": "content",
+      "form": "quote",
+      "narrative_fit": [
+        "background",
+        "theory",
+        "concept"
+      ],
+      "description": "标题为‘原文摘录’，下方大段引文突出核心观点，适合用于理论或概念阐释页。",
+      "sample_heading": "原文摘录",
+      "repeat": 0,
+      "slots": [
+        {
+          "name": "title",
+          "frame": 0,
+          "shape_id": 3,
+          "max_chars": 25,
+          "max_lines": 1,
+          "font_pt": 26,
+          "required": true
+        },
+        {
+          "name": "quote",
+          "frame": 1,
+          "shape_id": 4,
+          "max_chars": 209,
+          "max_lines": 6,
+          "font_pt": 20,
+          "required": false
+        }
+      ],
+      "decor": [],
+      "images": [],
+      "variant_group": 0,
+      "usable": true,
+      "unusable_reason": "",
+      "vision_ok": true,
+      "user_edited": false,
+      "parse_warnings": []
+    },
+    {
+      "page": 8,
+      "kind": "content",
+      "role": "content",
+      "form": "cards",
+      "narrative_fit": [
+        "hook",
+        "concept",
+        "takeaway"
+      ],
+      "description": "标题下并列三张卡片，每张含小标题与一句话说明，适合呈现三个核心要点或概念。",
+      "sample_heading": "三个要点并列",
+      "repeat": 3,
+      "slots": [
+        {
+          "name": "title",
+          "frame": 0,
+          "shape_id": 3,
+          "max_chars": 25,
+          "max_lines": 1,
+          "font_pt": 26,
+          "required": true
+        },
+        {
+          "name": "item1.head",
+          "frame": 1,
+          "shape_id": 6,
+          "max_chars": 127,
+          "max_lines": 10,
+          "font_pt": 17,
+          "required": true,
+          "grow_w": 3.56
+        },
+        {
+          "name": "item2.head",
+          "frame": 2,
+          "shape_id": 9,
+          "max_chars": 127,
+          "max_lines": 10,
+          "font_pt": 17,
+          "required": true,
+          "grow_w": 3.56
+        },
+        {
+          "name": "item3.head",
+          "frame": 3,
+          "shape_id": 12,
+          "max_chars": 136,
+          "max_lines": 10,
+          "font_pt": 17,
+          "required": true,
+          "grow_w": 3.91
+        }
+      ],
+      "decor": [],
+      "images": [],
+      "variant_group": 0,
+      "usable": true,
+      "unusable_reason": "",
+      "vision_ok": true,
+      "user_edited": false,
+      "parse_warnings": []
+    },
+    {
+      "page": 9,
+      "kind": "content",
+      "role": "content",
+      "form": "timeline",
+      "narrative_fit": [
+        "background",
+        "finding"
+      ],
+      "description": "时间轴展示四个制度变迁节点，每节点含年份与特征描述，适合讲历史演进脉络。",
+      "sample_heading": "制度变迁的三个节点",
+      "repeat": 4,
+      "slots": [
+        {
+          "name": "title",
+          "frame": 0,
+          "shape_id": 3,
+          "max_chars": 25,
+          "max_lines": 1,
+          "font_pt": 26,
+          "required": true
+        },
+        {
+          "name": "item1.head",
+          "frame": 1,
+          "shape_id": 6,
+          "max_chars": 84,
+          "max_lines": 9,
+          "font_pt": 18,
+          "required": true
+        },
+        {
+          "name": "item2.head",
+          "frame": 2,
+          "shape_id": 8,
+          "max_chars": 84,
+          "max_lines": 9,
+          "font_pt": 18,
+          "required": true
+        },
+        {
+          "name": "item3.head",
+          "frame": 3,
+          "shape_id": 10,
+          "max_chars": 84,
+          "max_lines": 9,
+          "font_pt": 18,
+          "required": true
+        },
+        {
+          "name": "item4.head",
+          "frame": 4,
+          "shape_id": 12,
+          "max_chars": 84,
+          "max_lines": 9,
+          "font_pt": 18,
+          "required": true
+        }
+      ],
+      "decor": [],
+      "images": [],
+      "variant_group": 0,
+      "usable": true,
+      "unusable_reason": "",
+      "vision_ok": true,
+      "user_edited": false,
+      "parse_warnings": []
+    },
+    {
+      "page": 10,
+      "kind": "functional",
+      "role": "section",
+      "form": "text",
+      "narrative_fit": [
+        "conclusion",
+        "discussion"
+      ],
+      "description": "左侧深蓝竖条，右侧标题框标有“四、结论与讨论”，为章节分隔页。",
+      "sample_heading": "四、结论与讨论",
+      "repeat": 0,
+      "slots": [
+        {
+          "name": "section_title",
+          "frame": 0,
+          "shape_id": 3,
+          "max_chars": 24,
+          "max_lines": 2,
+          "font_pt": 32,
+          "required": true
+        }
+      ],
+      "decor": [],
+      "images": [],
+      "variant_group": 0,
+      "usable": true,
+      "unusable_reason": "",
+      "vision_ok": true,
+      "user_edited": false,
+      "parse_warnings": []
+    },
+    {
+      "page": 11,
+      "kind": "functional",
+      "role": "end",
+      "form": "text",
+      "narrative_fit": [
+        "takeaway"
+      ],
+      "description": "致谢页，主标题‘谢谢’居中大字，下方小字‘请批评指正’，简洁收尾。",
+      "sample_heading": "谢谢",
+      "repeat": 0,
+      "slots": [
+        {
+          "name": "title",
+          "frame": 0,
+          "shape_id": 3,
+          "max_chars": 16,
+          "max_lines": 1,
+          "font_pt": 40,
+          "required": true,
+          "grow_w": 11.83
+        },
+        {
+          "name": "subtitle",
+          "frame": 1,
+          "shape_id": 4,
+          "max_chars": 91,
+          "max_lines": 2,
+          "font_pt": 15,
+          "required": false
+        }
+      ],
+      "decor": [],
+      "images": [],
+      "variant_group": 0,
+      "usable": true,
+      "unusable_reason": "",
+      "vision_ok": true,
+      "user_edited": false,
+      "parse_warnings": []
+    }
+  ]
+}

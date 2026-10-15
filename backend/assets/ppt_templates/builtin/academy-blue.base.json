@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "slide_size": [
+    13.33,
+    7.5
+  ],
+  "pages": {
+    "cover": 1,
+    "section": 10,
+    "content": 3,
+    "end": 11
+  },
+  "safe_area": [
+    0.7,
+    1.78,
+    12.63,
+    6.75
+  ],
+  "colors": {
+    "accent": "#1F4E79",
+    "accent_soft": "#E9EDF2",
+    "dark": "#262626",
+    "gray": "#595959",
+    "muted": "#8C8C8C"
+  },
+  "slots": {
+    "cover": {
+      "title": "演示文稿标题",
+      "subtitle": "副标题：研究主题与核心结论",
+      "info": [
+        "汇报人：XXX　　日期：2026 年 X 月"
+      ]
+    },
+    "section": {
+      "index": "",
+      "title": "四、结论与讨论",
+      "subs": []
+    },
+    "content": {
+      "title": "一、研究背景与问题提出",
+      "title_right_limit": 10.1
+    },
+    "end": {
+      "info": [
+        "谢谢",
+        "请批评指正"
+      ]
+    }
+  },
+  "confirmed": true
+}

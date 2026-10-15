@@ -605,7 +605,7 @@ onUnmounted(() => {
       <span v-if="file.columns?.length">{{ file.columns.length }} 列</span>
       <span v-if="isPdf">{{ pdfTotal ? pdfTotal + ' 页 · ' : '' }}{{ pdfSize }} · {{ pdfHasText ? '文字可以选中' : '扫描图片，无法选中文字' }}<template v-if="pdfOcrLabel"> · {{ pdfOcrLabel }}</template></span>
       <span v-else-if="isPptx">{{ pptSlides.length ? pptSlides.length + ' 页幻灯片 · ' : '' }}{{ pdfSize }} · 可直接改文字后写回</span>
-      <span v-else>{{ ((canEdit ? draft.length : content.length) || htmlPreview.length || file.size_bytes).toLocaleString() }} 字符</span>
+      <span v-else>{{ ((canEdit ? draft.length : content.length) || htmlPreview.length || file.size_bytes || 0).toLocaleString() }} 字符</span>
       <span v-if="isDocx">保存写回 Word，表格和图片仍留着</span>
       <span v-if="dirty" class="text-ruc-red">未保存</span>
     </div>

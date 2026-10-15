@@ -9,6 +9,7 @@ export const useSettingsStore = defineStore('settings', () => {
   const loaded = ref(false)
   const models = ref<ModelInfo[]>([])
   const providers = ref<ProviderInfo[]>([])
+  const pptReviewEnabled = ref(true)
 
   /** 当前选中模型对应的 provider 信息 */
   const currentProvider = computed(() => {
@@ -42,6 +43,7 @@ export const useSettingsStore = defineStore('settings', () => {
       })
 
       if (settings.model) selectedModel.value = settings.model
+      pptReviewEnabled.value = settings.ppt_review_enabled !== false
       models.value = modelData.data
       isConfigured.value = providers.value.some(p => p.key_configured)
       loaded.value = true
@@ -80,8 +82,13 @@ export const useSettingsStore = defineStore('settings', () => {
     await api.updateSettings({ model })
   }
 
+  async function setPptReviewEnabled(on: boolean) {
+    pptReviewEnabled.value = on
+    await api.updateSettings({ ppt_review_enabled: on ? '1' : '0' })
+  }
+
   return {
-    selectedModel, isConfigured, loaded, models, providers, currentProvider,
-    load, saveKey, saveBaseUrl, setModel,
+    selectedModel, isConfigured, loaded, models, providers, currentProvider, pptReviewEnabled,
+    load, saveKey, saveBaseUrl, setModel, setPptReviewEnabled,
   }
 })

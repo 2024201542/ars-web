@@ -3,6 +3,7 @@
 import asyncio
 import io
 import json
+import logging
 import os
 import re
 import tempfile
@@ -20,6 +21,7 @@ from services.user_manager import get_user_id
 from services.state_tracker import tracker as state_tracker
 
 router = APIRouter(prefix="/api/workspace", tags=["workspace"])
+logger = logging.getLogger(__name__)
 
 async def _verify_session(session_id: str, user_id: str):
     s = await state_tracker.get_session(session_id)
@@ -653,6 +655,24 @@ class PptxSlidesUpdate(BaseModel):
     slides: list[dict] = Field(default_factory=list)
 
 
+async def _sync_hand_edit(user_id: str, pptx_path: Path, source: str, before: dict | None = None) -> str:
+    """预览区写回之后，把命名框里改过的字记进计划并锁定。"""
+    from services.ppt import ppt_edit
+
+    ref = ppt_edit.find_plan_for_deck(pptx_path)
+    plan_path = Path(ref["absolute"]) if ref.get("absolute") else None
+    if plan_path is None and ref.get("path"):
+        plan_path = await workspace_manager.resolve_file(
+            user_id, ref["path"], ref.get("source") or source)
+    if plan_path is None or not plan_path.is_file():
+        return ""
+    plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    if not ppt_edit.sync_manual_edits(pptx_path, plan, before):
+        return ""
+    plan_path.write_text(json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8")
+    return ppt_edit.manual_loss_note(plan)
+
+
 @router.put("/files/pptx-slides")
 async def update_pptx_slides(
     session_id: str = Query(...),
@@ -669,12 +689,19 @@ async def update_pptx_slides(
     if not req.slides:
         raise HTTPException(status_code=400, detail="没有要写入的页")
     try:
+        from services.ppt import ppt_edit
         from services.ppt.pptx_edit import write_slides
 
+        before = await asyncio.to_thread(ppt_edit.slide_snapshot, fp)
         changed = await asyncio.to_thread(write_slides, fp, req.slides)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"写回 PPT 失败：{exc}")
-    return {"ok": True, "slides": changed, "path": path}
+    plan_note = ""
+    try:
+        plan_note = await _sync_hand_edit(user_id, fp, source, before)
+    except Exception:
+        logger.warning("手改没有写回计划", exc_info=True)
+    return {"ok": True, "slides": changed, "path": path, "plan_note": plan_note}
 
 
 @router.post("/generate-ppt")

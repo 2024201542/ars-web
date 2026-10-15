@@ -24,7 +24,7 @@ const props = defineProps<{
   source?: string
   openFile?: { name: string; path: string; ext: string } | null
 }>()
-const emit = defineEmits<{ done: []; generated: [file: any]; wrote: [] }>()
+const emit = defineEmits<{ done: []; generated: [file: any]; wrote: []; 'open-file': [file: any] }>()
 const sessionStore = useSessionStore()
 const settingsStore = useSettingsStore()
 const auth = useAuthStore()
@@ -32,7 +32,7 @@ const pendingStart = usePendingStartStore()
 const workspaceStore = useWorkspaceStore()
 const toast = useToast()
 
-const { isStreaming, resultContent, progressTokens, progressPhase, lastToolUse, statusText, liveStream, lastPpt, sendMessage: streamSend, abort } =
+const { isStreaming, resultContent, progressTokens, progressPhase, lastToolUse, statusText, liveStream, lastPpt, lastPptPlan, sendMessage: streamSend, abort } =
   useChatStream(() => props.sessionId, () => emit('done'))
 
 // 对话里直接生成的 PPT：刷新左侧文件栏并提示（文件落在附件所在文件夹，或你打开的文件夹）
@@ -44,6 +44,304 @@ watch(lastPpt, async (info) => {
   toast.success(`已生成 PPT：${info.name}（${info.pages} 页）→ ${info.dir || 'generated'}`)
   emit('done')
 })
+
+// 新引擎：对话里先给逐页计划，用户看过、点「生成 PPT」以后才出片
+const planResults = ref<Record<string, any>>({})
+const planBusy = ref('')
+const repairBusy = ref('')
+const pptLayoutNames = ref<Record<string, string>>({})
+
+watch(lastPptPlan, async (info) => {
+  if (!info) return
+  if (!Object.keys(pptLayoutNames.value).length) {
+    try {
+      const data = await api.listPptLayouts()
+      pptLayoutNames.value = Object.fromEntries(
+        Object.entries(data.specs || {}).map(([key, value]: [string, any]) => [key, value?.name || key]))
+    } catch { /* 名字拿不到就显示版式键 */ }
+  }
+  const total = info.plan?.slides?.length || 0
+  toast.info(`已列出 ${total} 页 PPT 计划，确认后点卡片上的「生成 PPT」`)
+  emit('done')
+})
+
+function rawPlan(msg: any) {
+  if (msg?.pptPlan) return msg.pptPlan
+  if (!msg?.metadata) return null
+  try {
+    const meta = typeof msg.metadata === 'string' ? JSON.parse(msg.metadata) : msg.metadata
+    return meta?.ppt_plan || null
+  } catch {
+    return null
+  }
+}
+
+// 消息里存的计划可能已经和文件不一致（模型插过页）。卡片以文件为准。
+const planSynced = new Set<string>()
+watch(() => sessionStore.messages.map((m) => rawPlan(m)?.plan_path || '').join('|'), () => {
+  void syncLatestPlanFile()
+}, { immediate: true })
+
+async function syncLatestPlanFile() {
+  const msg = [...sessionStore.messages].reverse().find((m) => rawPlan(m)?.plan_path)
+  const info = msg && rawPlan(msg)
+  if (!msg || !info?.plan_path) return
+  const key = `${info.source || ''}:${info.plan_path}`
+  if (planSynced.has(key)) return
+  planSynced.add(key)
+  try {
+    const data = await api.readPptPlan(info.plan_path, info.source || '')
+    const slides = data?.plan?.slides
+    if (!Array.isArray(slides)) return
+    const shown = info.plan?.slides?.length || 0
+    const next = { ...info, plan: data.plan }
+    if (shown && shown !== slides.length) next.changed_pages = []
+    ;(msg as any).pptPlan = next
+  } catch { /* 文件读不到就继续用消息里的计划 */ }
+}
+
+const STORY_DECK_NAMES: Record<string, string> = {
+  research_talk: '研究汇报',
+  defense: '毕业答辩',
+  proposal: '开题报告',
+  paper_report: '文献汇报',
+  lecture: '讲解',
+  review: '综述',
+  survey_report: '调研报告',
+}
+const STORY_ROLE_SHORT: Record<string, string> = {
+  hook: '引子', background: '背景', significance: '意义', question: '问题',
+  literature: '文献', theory: '理论', method: '方法', data: '数据',
+  concept: '概念', principle: '原理', finding: '发现', case: '案例',
+  comparison: '对比', example: '例子', misconception: '误区',
+  discussion: '讨论', recommendation: '建议', conclusion: '结论',
+  limitation: '不足', outlook: '展望', innovation: '创新',
+  schedule: '进度', takeaway: '启发', summary: '小结',
+}
+
+function storylineLine(plan: any): string {
+  const sections = plan?.storyline?.sections
+  if (!Array.isArray(sections) || !sections.length) return ''
+  const kind = STORY_DECK_NAMES[plan.storyline.deck_type] || '汇报'
+  const chain = sections
+    .map((section: any) => STORY_ROLE_SHORT[section?.role] || section?.title || '内容')
+    .join(' → ')
+  return `${kind}（${chain}）`
+}
+
+function planOf(msg: any) {
+  const info = rawPlan(msg)
+  if (!info?.plan_path) return null
+  const msgs = sessionStore.messages
+  const idx = msgs.findIndex((m) => m.id === msg.id)
+  if (idx >= 0 && msgs.slice(idx + 1).some((m) => rawPlan(m)?.plan_path === info.plan_path)) return null
+  return info
+}
+
+function layoutNameOf(layout: string) {
+  return pptLayoutNames.value[layout] || layout
+}
+
+function slideSummary(slide: any): string {
+  if (!slide) return ''
+  if (slide.title) return slide.title
+  if (slide.quote) return String(slide.quote)
+  if (slide.points?.length) return String(slide.points[0])
+  if (slide.cards?.length) {
+    return slide.cards.map((c: any) => c?.key || c?.desc || '').filter(Boolean).join(' / ')
+  }
+  if (slide.nodes?.length) {
+    return slide.nodes.map((n: any) => n?.year || n?.head || '').filter(Boolean).join(' → ')
+  }
+  return String(slide.subtitle || '')
+}
+
+const storyOpen = ref<Record<string, boolean>>({})
+const pptCurrentPage = ref(0)
+const editUndoBusy = ref('')
+
+function editOf(msg: any) {
+  if (msg?.pptEdit) return msg.pptEdit
+  if (!msg?.metadata) return null
+  try {
+    const meta = typeof msg.metadata === 'string' ? JSON.parse(msg.metadata) : msg.metadata
+    return meta?.ppt_edit || null
+  } catch {
+    return null
+  }
+}
+
+function rememberPptPage(page: number) {
+  if (page) pptCurrentPage.value = page
+}
+
+function editPlanUrl(info: any) {
+  if (!info?.plan_path) return '#/ppt/plan'
+  const query = new URLSearchParams()
+  query.set('plan', info.plan_path)
+  if (info.source) query.set('source', info.source)
+  return `#/ppt/plan?${query.toString()}`
+}
+
+function editDeckSource(info: any) {
+  return info?.deck_source || info?.source || ''
+}
+
+function editPageCount(info: any) {
+  const pages = Array.isArray(info?.changed_pages) ? info.changed_pages.filter((page: number) => page) : []
+  return pages.length || (Array.isArray(info?.changes) ? info.changes.length : 0)
+}
+
+async function repairEditCard(msg: any) {
+  const info = editOf(msg)
+  if (!info?.path || repairBusy.value) return
+  repairBusy.value = info.path
+  try {
+    const fixed = await api.repairPpt({ path: info.path, source: editDeckSource(info) })
+    ;(msg as any).pptEdit = { ...info, rev: fixed.rev, issues: fixed.issues || [] }
+    const left = fixed.issues?.length || 0
+    toast.success(left ? `已修，还剩 ${left} 项` : '已修，自检没问题了')
+  } catch (err: any) {
+    toast.error(err?.message || '修改失败')
+  } finally {
+    repairBusy.value = ''
+  }
+}
+
+async function undoEditCard(msg: any) {
+  const info = editOf(msg)
+  if (!info?.path || editUndoBusy.value) return
+  editUndoBusy.value = String(msg.id)
+  try {
+    const data = await api.undoPptEdit({ path: info.path, source: editDeckSource(info) })
+    ;(msg as any).pptEdit = { ...info, rev: data.rev, issues: data.issues || [], undone: true }
+    toast.success('已撤回到上一版')
+  } catch (err: any) {
+    toast.error(err?.message || '撤销失败')
+  } finally {
+    editUndoBusy.value = ''
+  }
+}
+
+function storyIssues(plan: any): any[] {
+  const items = plan?.story_issues
+  return Array.isArray(items) ? items : []
+}
+
+function reviewLine(plan: any): string {
+  const review = plan?.review
+  if (!review) return ''
+  const scores = review.scores_after && Object.keys(review.scores_after).length
+    ? review.scores_after
+    : review.scores_before
+  if (!scores || typeof scores !== 'object') return ''
+  const nums = Object.values(scores).map(item => Number(item)).filter(item => !Number.isNaN(item))
+  if (!nums.length) return ''
+  const avg = nums.reduce((sum, item) => sum + item, 0) / nums.length
+  const fixed = Array.isArray(review.fixed_pages) ? review.fixed_pages.length : 0
+  const same = review.same_model ? '。评委和写稿是同一个模型' : ''
+  return `衔接评分 ${avg.toFixed(1)} / 5，修了 ${fixed} 页${same}`
+}
+
+function toggleStory(id: string) {
+  storyOpen.value = { ...storyOpen.value, [id]: !storyOpen.value[id] }
+}
+
+function planEditUrl(msg: any, page = 0): string {
+  const info = planOf(msg)
+  if (!info?.plan_path) return '#/ppt/plan'
+  const query = new URLSearchParams()
+  query.set('plan', info.plan_path)
+  if (info.source) query.set('source', info.source)
+  if (info.template_id) query.set('template', info.template_id)
+  if (page) query.set('page', String(page))
+  return `#/ppt/plan?${query.toString()}`
+}
+
+function openDraft(msg: any) {
+  const info = planOf(msg)
+  const path = String(info?.draft_path || '')
+  if (!path) return
+  const name = path.split('/').pop() || path
+  emit('open-file', { name, path, ext: '.md', source: info?.source || '' })
+}
+
+function issueGroups(issues: any[]) {
+  const groups: Record<string, { kind: string; count: number; hint: string; pages: number[] }> = {}
+  for (const issue of issues || []) {
+    const kind = String(issue?.kind || 'other')
+    if (!groups[kind]) groups[kind] = { kind, count: 0, hint: issue?.hint || '', pages: [] }
+    groups[kind].count += 1
+    if (issue?.page && !groups[kind].pages.includes(issue.page)) groups[kind].pages.push(issue.page)
+  }
+  return Object.values(groups)
+}
+
+function planResultOf(msg: any) {
+  const info = planOf(msg)
+  return info?.plan_path ? planResults.value[info.plan_path] : null
+}
+
+async function repairFromCard(msg: any) {
+  const info = planOf(msg)
+  const current = planResultOf(msg)
+  if (!info?.plan_path || !current?.path || repairBusy.value) return
+  repairBusy.value = info.plan_path
+  try {
+    const fixed = await api.repairPpt({ path: current.path, source: current.source || '' })
+    planResults.value = {
+      ...planResults.value,
+      [info.plan_path]: { ...current, issues: fixed.issues, repaired: fixed.repaired, rev: fixed.rev },
+    }
+    const left = fixed.issues?.length || 0
+    const pulled = fixed.repaired?.pulled || 0
+    const removed = fixed.repaired?.removed || 0
+    toast.success(left
+      ? `已修：拉回 ${pulled} 处，删掉叠字 ${removed} 处，还剩 ${left} 项`
+      : `已修：拉回 ${pulled} 处，删掉叠字 ${removed} 处`)
+  } catch (e: any) {
+    toast.error(e.message || '修改失败')
+  } finally {
+    repairBusy.value = ''
+  }
+}
+
+async function composeFromPlan(msg: any) {
+  const info = planOf(msg)
+  if (!info?.plan_path || planBusy.value) return
+  planBusy.value = info.plan_path
+  try {
+    const data = await api.composePpt({
+      plan_path: info.plan_path,
+      source: info.source || '',
+      template_id: info.template_id || pptTemplateId.value,
+      save_to_local: info.source === 'local',
+    })
+    planResults.value = { ...planResults.value, [info.plan_path]: data }
+    if (data.source === 'local') {
+      workspaceStore.source = 'local' as any
+      await workspaceStore.loadFiles(props.sessionId)
+    }
+    const issues = data.issues?.length || 0
+    toast.success(`已出片：${data.name}（${data.pages} 页${issues ? `，自检 ${issues} 项` : '，自检没问题'}）`)
+    emit('done')
+  } catch (e: any) {
+    toast.error(e.message || '出片失败')
+  } finally {
+    planBusy.value = ''
+  }
+}
+
+function prefillRevise() {
+  inputMessage.value = '把第  页改成'
+  nextTick(() => {
+    const el = textareaRef.value
+    if (!el) return
+    el.focus()
+    const pos = '把第'.length
+    el.setSelectionRange(pos, pos)
+  })
+}
 
 interface LiteraturePaper { doi: string; title: string; year: string; has_pdf: boolean }
 const pickedPapers = ref<Record<number, string[]>>({})
@@ -261,9 +559,17 @@ const pptSessionPages = ref(12)
 const pptTemplateName = ref('按主题（内置版式）')
 const pptAutoImage = ref(false)
 
+const pptPickerRef = ref<any>(null)
+
 function openPptPicker() {
   closeComposerMenus()
   pptPicker.value = true
+}
+
+async function openBaseFromCard() {
+  openPptPicker()
+  await nextTick()
+  pptPickerRef.value?.openBase?.()
 }
 
 function applyPptChoice(payload: { templateId: string; pages: number; name: string; autoImage?: boolean }) {
@@ -637,7 +943,7 @@ const composerPlaceholder = computed(() => {
   if (props.skillName === 'literature-find' && props.modeName === 'passage') return '贴一段正在写的文字，Enter 生成检索词并查找'
   if (props.skillName === 'academic-paper' && props.modeName === 'structure-map') return '点名要画的文稿，或直接发送。只另存结构图，不改原文'
   if (props.skillName === 'literature-find' || (props.skillName === 'academic-paper' && props.modeName === 'lit-search')) return '输入检索词，Enter 发送'
-  return '输入研究主题… @ 引用文件；说「根据这个做个 ppt」会直接生成幻灯片并放到该文件所在文件夹'
+  return '输入研究主题… @ 引用文件；说「根据这个做个 PPT」会先列一份逐页计划，确认后再出片'
 })
 
 async function releaseTurn() {
@@ -944,7 +1250,8 @@ async function doSend(msg: string) {
       { paths: files.filter((f: any) => !f.is_dir).map((f: any) => f.path), source: props.source, userText: msg,
         pptTemplateId: props.skillName === 'ppt-maker' ? pptTemplateId.value : '',
         pptPages: props.skillName === 'ppt-maker' ? pptSessionPages.value : 0,
-        pptAutoImage: props.skillName === 'ppt-maker' ? pptAutoImage.value : false },
+        pptAutoImage: props.skillName === 'ppt-maker' ? pptAutoImage.value : false,
+        currentPage: pptCurrentPage.value || undefined },
     )
   } finally {
     steering.value = false
@@ -1214,6 +1521,182 @@ function renderMarkdown(t: string) { return t ? md.render(t) : '' }
               </template>
             </div>
             </template>
+          </div>
+          <!-- 新引擎：对话里列出的 PPT 计划（确认后才出片） -->
+          <div v-if="msg.role === 'assistant' && planOf(msg)"
+               class="mt-2 rounded-xl border border-ruc-red/30 bg-white px-3 py-2">
+            <p class="text-[11px] font-ui text-ruc-red flex items-center gap-1">
+              <Presentation class="w-3.5 h-3.5" />
+              PPT 计划：{{ planOf(msg).plan?.title || '未命名' }}
+              <span class="text-ruc-text-light">
+                {{ planOf(msg).plan?.slides?.length || 0 }} 页 · {{ planOf(msg).model }}
+              </span>
+            </p>
+            <p v-if="planOf(msg).material_from" class="mt-0.5 text-[10px] font-ui text-ruc-text-dim">
+              材料来自：{{ planOf(msg).material_from }}
+            </p>
+            <p v-if="storylineLine(planOf(msg).plan)" class="mt-0.5 text-[10px] font-ui text-ruc-text-dim">
+              结构：{{ storylineLine(planOf(msg).plan) }}
+            </p>
+            <p v-else-if="planOf(msg).plan?.story_note" class="mt-0.5 text-[10px] font-ui text-amber-800">
+              {{ planOf(msg).plan.story_note }}
+            </p>
+            <p v-if="planOf(msg).plan?.write_note" class="mt-0.5 text-[10px] font-ui text-amber-800">
+              {{ planOf(msg).plan.write_note }}
+            </p>
+            <p v-if="reviewLine(planOf(msg).plan)" class="mt-0.5 text-[10px] font-ui text-ruc-text-dim">
+              {{ reviewLine(planOf(msg).plan) }}
+            </p>
+            <div v-if="storyIssues(planOf(msg).plan).length" class="mt-0.5">
+              <button
+                type="button"
+                class="text-[10px] font-ui text-amber-800"
+                @click="toggleStory(msg.id)"
+              >讲法检查：{{ storyIssues(planOf(msg).plan).length }} 个问题</button>
+              <ul v-if="storyOpen[msg.id]" class="mt-1 space-y-0.5">
+                <li v-for="(issue, issueIndex) in storyIssues(planOf(msg).plan)" :key="issue.code + '-' + issue.page + '-' + issueIndex" class="text-[10px] font-ui text-ruc-text-dim">
+                  <a class="text-ruc-red" :href="planEditUrl(msg, issue.page)" target="_blank" rel="noreferrer">第 {{ issue.page }} 页</a>
+                  {{ issue.detail }}
+                </li>
+              </ul>
+            </div>
+            <p v-if="planOf(msg).plan?.quality?.thin_before" class="mt-0.5 text-[10px] font-ui text-amber-800">
+              内容偏薄 {{ planOf(msg).plan.quality.thin_before }} 页，已自动充实 {{ planOf(msg).plan.quality.enriched || 0 }} 页
+            </p>
+            <div class="mt-1.5 flex flex-wrap items-center gap-1.5">
+              <button
+                type="button"
+                class="px-2 py-1 rounded-md border border-ruc-divider text-[11px] font-ui text-ruc-text-dim hover:border-ruc-red/40 hover:text-ruc-red"
+                @click="openPptPicker"
+              >模板：{{ pptTemplateName }}</button>
+              <button
+                type="button"
+                class="px-2 py-1 rounded-md bg-ruc-red text-white text-[11px] font-ui disabled:opacity-50"
+                :disabled="planBusy === planOf(msg).plan_path"
+                @click="composeFromPlan(msg)"
+              >{{ planBusy === planOf(msg).plan_path ? '出片中…' : '生成 PPT' }}</button>
+              <button
+                type="button"
+                class="px-2 py-1 rounded-md border border-ruc-divider text-[11px] font-ui text-ruc-text-dim hover:border-ruc-red/40 hover:text-ruc-red"
+                @click="prefillRevise"
+              >再改改</button>
+              <a class="text-[11px] font-ui text-ruc-red" :href="planEditUrl(msg)" target="_blank" rel="noreferrer">打开计划</a>
+              <button
+                v-if="planOf(msg).draft_path"
+                type="button"
+                class="text-[11px] font-ui text-ruc-red"
+                @click="openDraft(msg)"
+              >打开内容稿</button>
+            </div>
+            <div class="mt-1.5 space-y-0.5 max-h-56 overflow-auto">
+              <div
+                v-for="(s, i) in (planOf(msg).plan?.slides || [])"
+                :key="'plan-' + i"
+                class="flex items-start gap-1.5 text-[11px] font-ui rounded px-1"
+                :class="(planOf(msg).changed_pages || []).includes(i + 1) || (planOf(msg).plan?.quality?.thin_pages || []).includes(i + 1) ? 'bg-amber-100' : ''"
+              >
+                <span class="w-5 text-right text-ruc-text-light flex-shrink-0">{{ i + 1 }}</span>
+                <span class="w-14 flex-shrink-0 text-ruc-text-dim">{{ layoutNameOf(s.layout) }}</span>
+                <span v-if="(planOf(msg).plan?.quality?.thin_pages || []).includes(i + 1)" class="flex-shrink-0 text-amber-800">偏薄</span>
+                <span class="min-w-0 flex-1 truncate text-ruc-text">{{ slideSummary(s) }}</span>
+              </div>
+            </div>
+            <p v-if="planResultOf(msg) && planResultOf(msg).base_confirmed === false"
+               class="mt-2 rounded-md bg-amber-50 px-2 py-1 text-[10px] font-ui text-amber-800">
+              这套模板的底板是自动猜的，可能留下示例字。
+              <button type="button" class="ml-1 text-ruc-red" @click="openBaseFromCard">设置底板</button>
+            </p>
+            <div v-if="planResultOf(msg)" class="mt-2 border-t border-ruc-divider pt-2">
+              <p class="text-[10px] font-ui text-ruc-text-dim">
+                已出片：{{ planResultOf(msg).name }}（{{ planResultOf(msg).pages }} 页）
+                <a class="ml-1 text-ruc-red" :href="api.getPptFileUrl(planResultOf(msg).path, planResultOf(msg).source || '')" target="_blank" rel="noreferrer">下载</a>
+              </p>
+              <div class="mt-1.5 flex gap-2 overflow-x-auto pb-1">
+                <a
+                  v-for="t in (planResultOf(msg).thumbs || [])"
+                  :key="'th-' + t.page"
+                  :href="api.getPptPageImageUrl(planResultOf(msg).path, t.page, planResultOf(msg).source || '', planResultOf(msg).rev || '')"
+                  target="_blank"
+                  rel="noreferrer"
+                  class="relative flex-shrink-0 rounded-md border border-ruc-divider overflow-hidden bg-ruc-warm/40"
+                  style="width: 132px; aspect-ratio: 16 / 9"
+                >
+                  <img
+                    :src="api.getPptPageImageUrl(planResultOf(msg).path, t.page, planResultOf(msg).source || '', planResultOf(msg).rev || '')"
+                    class="absolute inset-0 w-full h-full object-cover"
+                    alt=""
+                  />
+                  <span class="absolute left-1 bottom-1 text-[9px] font-ui text-ruc-text-dim bg-white/85 rounded px-1">{{ t.page }}</span>
+                </a>
+              </div>
+              <p v-if="planResultOf(msg).template_pages?.length" class="mt-1 text-[10px] font-ui text-ruc-text-dim">
+                内容用了模板第 {{ planResultOf(msg).template_pages.join('、') }} 页。
+              </p>
+              <div v-if="planResultOf(msg).issues?.length" class="mt-1 space-y-1">
+                <p v-for="group in issueGroups(planResultOf(msg).issues)" :key="group.kind" class="text-[10px] font-ui text-amber-800">
+                  {{ group.kind }} {{ group.count }} 项。{{ group.hint }}
+                  <button v-if="group.kind === 'junk'" type="button" class="ml-1 text-ruc-red" @click="openBaseFromCard">设置底板</button>
+                </p>
+                <button
+                  v-if="issueGroups(planResultOf(msg).issues).some((g) => g.kind === 'offslide' || g.kind === 'overlap')"
+                  type="button"
+                  class="text-[10px] font-ui text-white bg-ruc-red rounded px-2 py-0.5 disabled:opacity-50"
+                  :disabled="repairBusy === planOf(msg).plan_path"
+                  @click="repairFromCard(msg)"
+                >{{ repairBusy === planOf(msg).plan_path ? '正在修…' : '一键修掉' }}</button>
+              </div>
+            </div>
+          </div>
+          <div v-if="msg.role === 'assistant' && editOf(msg)" class="mt-2 rounded-xl border border-ruc-red/30 bg-white px-3 py-2">
+            <p class="text-[11px] font-ui text-ruc-red">已改 {{ editPageCount(editOf(msg)) }} 页</p>
+            <p v-for="(change, changeIndex) in (editOf(msg).changes || [])" :key="'chg-' + changeIndex" class="mt-0.5 text-[11px] font-ui text-ruc-text">
+              {{ change.page ? '第 ' + change.page + ' 页：' : '' }}{{ change.what }}
+            </p>
+            <div v-if="editOf(msg).path" class="mt-1.5 space-y-2">
+              <div v-for="page in (editOf(msg).changed_pages || []).filter((page) => page)" :key="'edit-page-' + page" class="flex gap-2">
+                <button type="button" class="w-[132px] text-left" @click="rememberPptPage(page)">
+                  <span class="block text-[10px] font-ui text-ruc-text-light">改前</span>
+                  <img
+                    :src="api.getPptPageImageUrl(editOf(msg).path, page, editDeckSource(editOf(msg)), editOf(msg).version || '', editOf(msg).version || 0)"
+                    class="mt-0.5 w-full rounded border border-ruc-divider bg-ruc-warm/40"
+                    style="aspect-ratio: 16 / 9"
+                    alt=""
+                  />
+                </button>
+                <button type="button" class="w-[132px] text-left" @click="rememberPptPage(page)">
+                  <span class="block text-[10px] font-ui text-ruc-text-light">改后</span>
+                  <img
+                    :src="api.getPptPageImageUrl(editOf(msg).path, page, editDeckSource(editOf(msg)), editOf(msg).rev || '')"
+                    class="mt-0.5 w-full rounded border border-ruc-divider bg-ruc-warm/40"
+                    style="aspect-ratio: 16 / 9"
+                    alt=""
+                  />
+                </button>
+              </div>
+            </div>
+            <div class="mt-1.5 flex flex-wrap items-center gap-2">
+              <button
+                v-if="editOf(msg).path"
+                type="button"
+                class="px-2 py-1 rounded-md border border-ruc-divider text-[11px] font-ui text-ruc-text-dim hover:border-ruc-red/40 hover:text-ruc-red disabled:opacity-50"
+                :disabled="editUndoBusy === String(msg.id)"
+                @click="undoEditCard(msg)"
+              >{{ editUndoBusy === String(msg.id) ? '撤销中…' : '撤销' }}</button>
+              <a class="text-[11px] font-ui text-ruc-red" :href="editPlanUrl(editOf(msg))" target="_blank" rel="noreferrer">在编辑页打开</a>
+            </div>
+            <div v-if="(editOf(msg).issues || []).length" class="mt-1 space-y-0.5">
+              <p v-for="(issue, issueIndex) in editOf(msg).issues" :key="'edit-issue-' + issueIndex" class="text-[10px] font-ui text-amber-800">
+                <button type="button" class="text-ruc-red" @click="rememberPptPage(issue.page)">第 {{ issue.page }} 页</button>
+                {{ issue.detail || issue.kind }}
+              </p>
+              <button
+                v-if="editOf(msg).path"
+                type="button"
+                class="text-[10px] font-ui text-white bg-ruc-red rounded px-2 py-0.5 disabled:opacity-50"
+                :disabled="repairBusy === editOf(msg).path"
+                @click="repairEditCard(msg)"
+              >{{ repairBusy === editOf(msg).path ? '正在修…' : '一键修掉' }}</button>
+            </div>
           </div>
           <!-- 对话里一句话生成的 PPT -->
           <div v-if="msg.role === 'assistant' && (msg as any).ppt" class="mt-2 rounded-xl border border-ruc-red/30 bg-ruc-red-pale/40 px-3 py-2">
@@ -1587,10 +2070,12 @@ function renderMarkdown(t: string) { return t ? md.render(t) : '' }
     <!-- PPT 模板选择（含整页预览与上传） -->
     <PptTemplatePicker
       v-if="pptPicker"
+      ref="pptPickerRef"
       :template-id="pptTemplateId"
       :pages="pptSessionPages"
       @close="pptPicker = false"
       @confirm="applyPptChoice"
+      @saved-local="workspaceStore.loadFiles(props.sessionId)"
     />
   </div>
 </template>

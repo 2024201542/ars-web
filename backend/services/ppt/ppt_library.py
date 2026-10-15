@@ -72,6 +72,8 @@ def load_user(user_id: str) -> list[dict]:
     items: list[dict] = []
     folder = user_tpl_dir(user_id)
     for pptx in sorted(folder.glob("*.pptx")):
+        if ".backup" in pptx.name.lower():
+            continue
         analysis = ppt_template.load_analysis(folder / f"{pptx.stem}.analysis.json")
         analysis = _fresh(pptx, analysis, tid=pptx.stem,
                           name=(analysis or {}).get("name") or pptx.stem, source="user")
@@ -109,6 +111,16 @@ def builtin_for_theme(theme: str) -> Optional[dict]:
     return items[0] if items else None
 
 
+def _pages_status(analysis: dict) -> str:
+    if not analysis.get("file_path"):
+        return "none"
+    from services.ppt import ppt_pages
+    try:
+        return ppt_pages.pages_status(analysis)
+    except Exception:
+        return "none"
+
+
 def summary(analysis: dict, with_preview: bool = True) -> dict:
     out = {
         "id": analysis.get("id"),
@@ -120,6 +132,7 @@ def summary(analysis: dict, with_preview: bool = True) -> dict:
         "slide_width": analysis.get("slide_width"),
         "slide_height": analysis.get("slide_height"),
         "roles": analysis.get("manual_roles") or {},
+        "pages_status": _pages_status(analysis),
     }
     if with_preview:
         out["preview"] = ppt_template.structure_preview(analysis, max_slides=10)

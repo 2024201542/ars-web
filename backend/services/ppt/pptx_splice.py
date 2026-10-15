@@ -15,10 +15,13 @@
 from __future__ import annotations
 
 import copy
+import io
 import pathlib
 import re
 import tempfile
 import uuid
+import zipfile
+import xml.etree.ElementTree as ET
 from typing import Optional
 
 from pptx import Presentation
@@ -87,6 +90,151 @@ def _delete_slides(prs: Presentation, count: int) -> None:
         sld_id_lst.remove(element)
 
 
+_EP = "http://schemas.openxmlformats.org/officeDocument/2006/extended-properties"
+_VT = "http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes"
+_PML = "http://schemas.openxmlformats.org/presentationml/2006/main"
+_NOTES_REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesSlide"
+_SLIDE_TITLE_LABELS = {"幻灯片标题", "Slide Titles"}
+
+
+def _xml_text(element, value: str) -> None:
+    if element is not None and (element.text or "") != value:
+        element.text = value
+
+
+def sync_app_props(path) -> None:
+    """模板里的 docProps/app.xml 还记着原来的页数。
+
+    删掉模板原页之后这个数字不会跟着变。PowerPoint 一对不上就弹「内容有问题」。
+    """
+    path = pathlib.Path(path)
+    if not path.is_file():
+        return
+    data = path.read_bytes()
+    fixed = sync_app_bytes(data)
+    if fixed != data:
+        path.write_bytes(fixed)
+
+
+def sync_app_bytes(blob: bytes) -> bytes:
+    try:
+        return _sync_app_bytes(blob)
+    except (zipfile.BadZipFile, ET.ParseError, KeyError):
+        return blob
+
+
+def _sync_app_bytes(blob: bytes) -> bytes:
+    with zipfile.ZipFile(io.BytesIO(blob)) as zf:
+        names = zf.namelist()
+        if "docProps/app.xml" not in names or "ppt/presentation.xml" not in names:
+            return blob
+        slides = _count_slides(zf.read("ppt/presentation.xml"))
+        notes = _count_notes(zf, names)
+        app = zf.read("docProps/app.xml")
+        new_app = _rewrite_app_xml(app, slides, notes)
+        if new_app == app:
+            return blob
+        out = io.BytesIO()
+        with zipfile.ZipFile(out, "w") as dest:
+            for info in zf.infolist():
+                payload = new_app if info.filename == "docProps/app.xml" else zf.read(info.filename)
+                cloned = zipfile.ZipInfo(filename=info.filename, date_time=info.date_time)
+                cloned.compress_type = info.compress_type
+                cloned.external_attr = info.external_attr
+                dest.writestr(cloned, payload)
+        return out.getvalue()
+
+
+def _count_slides(presentation_xml: bytes) -> int:
+    root = ET.fromstring(presentation_xml)
+    return len(root.findall(f".//{{{_PML}}}sldId"))
+
+
+def _count_notes(zf: zipfile.ZipFile, names: list[str]) -> int:
+    count = 0
+    for name in names:
+        if not (name.startswith("ppt/slides/_rels/slide") and name.endswith(".xml.rels")):
+            continue
+        root = ET.fromstring(zf.read(name))
+        for rel in root:
+            if rel.attrib.get("Type") == _NOTES_REL:
+                count += 1
+    return count
+
+
+def _rewrite_app_xml(data: bytes, slides: int, notes: int) -> bytes:
+    ET.register_namespace("", _EP)
+    ET.register_namespace("vt", _VT)
+    root = ET.fromstring(data)
+    slide_el = root.find(f"{{{_EP}}}Slides")
+    notes_el = root.find(f"{{{_EP}}}Notes")
+    if slide_el is None:
+        return data
+    heading = root.find(f"{{{_EP}}}HeadingPairs")
+    titles = root.find(f"{{{_EP}}}TitlesOfParts")
+    title_count = _slide_title_count(heading)
+    if (slide_el.text or "") == str(slides) and (notes_el is None or (notes_el.text or "") == str(notes)) and title_count == slides:
+        return data
+    _xml_text(slide_el, str(slides))
+    _xml_text(notes_el, str(notes))
+    if heading is not None and titles is not None:
+        _sync_slide_titles(heading, titles, slides)
+    body = ET.tostring(root, encoding="utf-8")
+    return b"<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\r\n" + body
+
+
+def _slide_title_count(heading) -> int | None:
+    if heading is None:
+        return None
+    vector = heading.find(f"{{{_VT}}}vector")
+    if vector is None:
+        return None
+    variants = list(vector.findall(f"{{{_VT}}}variant"))
+    for index in range(0, len(variants) - 1, 2):
+        name_el = variants[index].find(f"{{{_VT}}}lpstr")
+        count_el = variants[index + 1].find(f"{{{_VT}}}i4")
+        if name_el is not None and (name_el.text or "") in _SLIDE_TITLE_LABELS and count_el is not None:
+            try:
+                return int(count_el.text or "0")
+            except ValueError:
+                return None
+    return None
+
+
+def _sync_slide_titles(heading, titles, slides: int) -> None:
+    vector = heading.find(f"{{{_VT}}}vector")
+    titles_vec = titles.find(f"{{{_VT}}}vector")
+    if vector is None or titles_vec is None:
+        return
+    variants = list(vector.findall(f"{{{_VT}}}variant"))
+    prefix = 0
+    sample = "PowerPoint 演示文稿"
+    for index in range(0, len(variants) - 1, 2):
+        name_el = variants[index].find(f"{{{_VT}}}lpstr")
+        count_el = variants[index + 1].find(f"{{{_VT}}}i4")
+        name = (name_el.text or "") if name_el is not None else ""
+        try:
+            count = int(count_el.text or "0") if count_el is not None else 0
+        except ValueError:
+            count = 0
+        if name in _SLIDE_TITLE_LABELS:
+            _xml_text(count_el, str(slides))
+            break
+        prefix += count
+    items = list(titles_vec.findall(f"{{{_VT}}}lpstr"))
+    if prefix < len(items) and (items[prefix].text or "").strip():
+        sample = items[prefix].text
+    for child in list(titles_vec):
+        titles_vec.remove(child)
+    for item in items[:prefix]:
+        titles_vec.append(item)
+    for _ in range(slides):
+        row = ET.Element(f"{{{_VT}}}lpstr")
+        row.text = sample
+        titles_vec.append(row)
+    titles_vec.set("size", str(prefix + slides))
+
+
 # ────────────────────────── 填字 ──────────────────────────
 
 MARKER_RE = re.compile(r"^\s*([▪·•◦●○\-–—*]|\d+[.、)）]|[（(]\d+[)）])\s*")
@@ -109,7 +257,7 @@ def _expand_for_slot(lines: list[tuple[int, str]]) -> list[tuple[int, str]]:
 
 def _frames(slide) -> list:
     """按与解析时相同的顺序取文本框（同一条 is_text_candidate 规则，索引才对得上）。"""
-    return [s for s in slide.shapes if ppt_template.is_text_candidate(s)]
+    return ppt_template.iter_text_shapes(slide)
 
 
 def _para_prefix(text: str) -> str:
@@ -335,14 +483,16 @@ def _want_tag(slide: dict) -> str:
         "toc": ppt_template.TAG_TOC, "section": ppt_template.TAG_SECTION,
         "end": ppt_template.TAG_END, "two-col": ppt_template.TAG_TWO_COL,
         "two_col": ppt_template.TAG_TWO_COL, "quote": ppt_template.TAG_QUOTE,
-        "big-number": ppt_template.TAG_BIG_NUMBER, "image+text": ppt_template.TAG_IMAGE_TEXT,
+        "big-number": ppt_template.TAG_BIG_NUMBER, "bignum": ppt_template.TAG_BIG_NUMBER,
+        "image+text": ppt_template.TAG_IMAGE_TEXT, "image_text": ppt_template.TAG_IMAGE_TEXT,
+        "image-text": ppt_template.TAG_IMAGE_TEXT,
         "cards-3": ppt_template.TAG_CARDS, "cards": ppt_template.TAG_CARDS,
-        "timeline": ppt_template.TAG_TIMELINE,
-        "content": "", "bullets": "",
+        "timeline": ppt_template.TAG_TIMELINE, "compare": ppt_template.TAG_TWO_COL,
+        "content": "", "bullets": "", "numbered": "",
     }
     if layout in mapping and mapping[layout]:
         return mapping[layout]
-    n = len(slide.get("bullets") or [])
+    n = len(slide.get("bullets") or slide.get("points") or slide.get("rows") or slide.get("cards") or [])
     if n <= 0:
         return ppt_template.TAG_SECTION
     return f"{ppt_template.TAG_BULLETS}-{max(1, min(7, n))}"
@@ -583,6 +733,7 @@ def splice(analysis: dict, outline: dict, template_path: str | pathlib.Path,
                 images_added += 1
 
     prs.save(str(out))
+    sync_app_props(out)
     used = [spec["tag"] for _, spec, _ in plan]
     return {
         "pages": len(plan),

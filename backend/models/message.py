@@ -33,6 +33,8 @@ class ChatRequest(BaseModel):
     ppt_pages: int = Field(0, ge=0, le=40)
     # 没配图时用万相自动生成一张（要花钱花时间，默认关）
     ppt_auto_image: bool = False
+    # 编辑页或对话卡片上最近点过的页。用户说「这页」时用它。
+    current_page: Optional[int] = Field(None, ge=0, le=80)
     debate_models: list[str] = Field(default_factory=list, max_length=6)
     debate_seats: list[DebateSeat] = Field(default_factory=list, max_length=6)
     debate_action: str = Field("", max_length=20)

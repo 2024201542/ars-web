@@ -14,8 +14,11 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 import pathlib
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 BACKEND_DIR = pathlib.Path(__file__).resolve().parents[2]
 CACHE_DIR = BACKEND_DIR / "data" / "ppt_vision"
@@ -25,7 +28,7 @@ VISION_MODELS = {
     "qwen3-vl-plus": "qwen",
     "qwen-vl-plus": "qwen",
 }
-DEFAULT_VISION_MODEL = "qwen-vl-max"
+DEFAULT_VISION_MODEL = "qwen3-vl-plus"
 
 PROMPT = (
     "这是一张幻灯片页面。请只输出 JSON（不要解释、不要代码块标记），字段为：\n"
@@ -54,7 +57,56 @@ def _cache_path(template_path: pathlib.Path, page: int) -> pathlib.Path:
     return CACHE_DIR / f"{_fingerprint(template_path)}_p{page}.json"
 
 
-async def _vision_call(user_id: str, image_path: pathlib.Path, model_id: str) -> tuple[dict, str]:
+PROMPT_VERSION = 4
+SUMMARY_TIMEOUT = 180
+
+PARSE_PROMPT = """这是一套 PPT 模板中的一页，图上用红框和 F 编号标出了每个文本框，蓝框和 P 编号标出了图片位。下面是每个框的位置和原文。
+请判断这一页怎么用，只输出 JSON，不要解释：
+{
+  "role": "页面角色，取值：cover/toc/section/content/summary/end/qa/blank",
+  "form": "内容形态，取值：bullets/numbered/cards/compare/timeline/process/quote/bignum/image_text/table/chart/text/none",
+  "narrative_fit": ["这页适合讲的叙事角色，0 到 4 个，取值见下表"],
+  "description": "一句话说明这页的版面和适合讲什么，不超过 60 字",
+  "sample_heading": "这页模板原来的标题原文，没有就空",
+  "repeat": 并列的格子有几组，没有就 0,
+  "frames": [{"id": "F3", "slot": "格子名"}],
+  "missing": [{"slot": "格子名", "box": [x, y, w, h]}],
+  "usable": true,
+  "unusable_reason": ""
+}
+格子名只能用：title、subtitle、lead（标题下的导语或承接句）、section_index、section_title、section_question、
+item1.head、item1.body、item2.head……（并列格子按从左到右、从上到下编号）、stat1.value、stat1.label、quote、source、
+left.head、left.body、right.head、right.body、caption、info1、info2、body、decor_keep（校名、页码、导航条，出片保留）、
+decor_clear（示例英文、装饰口号、水印、「点击输入」占位，出片清空）。
+每个 F 编号都要给一个格子名。只能使用框清单里出现过的 F 编号，不要自己编编号。清单里没有文本框时，frames 给空数组。
+并列格子从左到右、从上到下编号，同一个 item 编号不要用两次。圆圈或药丸里单独的数字不是正文，标成 decor_keep。示例英文、装饰口号标成 decor_clear，不要标成 subtitle。
+目录里「-01-」「-02-」这种序号标成 decor_keep，不要标成 title 或 itemN.head。序号旁边的章节名标成 itemN.head，序号下面的英文占位标成 decor_clear。
+一页如果没有能写下章节名的框（没有 section_title，也没有单独的大标题），role 不能是 section，标成 content。
+missing 只填图上看得到文字区域、但没有红框的地方，坐标是相对整页的 0 到 1。
+整页是一张图片、没有可写字的地方，usable 填 false。
+叙事角色取值：__NARRATIVE_ROLES__
+"""
+
+
+def friendly_vision_error(raw: str) -> str:
+    text = raw or ""
+    if "invalid_api_key" in text or "Incorrect API key" in text:
+        return "通义千问的密钥不被阿里云接受。到设置里换成百炼的 Key 后再校正。"
+    if "model_not_found" in text or "Model not exist" in text:
+        return "看图模型在这个接口上不存在。当前账号可用的是 qwen3-vl-plus。"
+    return text
+
+
+def _fatal_vision_error(raw: str) -> bool:
+    text = raw or ""
+    return any(word in text for word in (
+        "密钥", "API Key", "invalid_api_key", "Incorrect API key",
+        "看图模型", "model_not_found", "Model not exist",
+    ))
+
+
+async def _vision_call(user_id: str, image_path: pathlib.Path, model_id: str,
+                       prompt: str = PROMPT, max_tokens: int = 900) -> tuple[dict, str]:
     """调视觉模型。返回 (解析出的 dict, 错误信息)。"""
     import httpx
 
@@ -73,10 +125,10 @@ async def _vision_call(user_id: str, image_path: pathlib.Path, model_id: str) ->
     body = {
         "model": model_id,
         "messages": [{"role": "user", "content": [
-            {"type": "text", "text": PROMPT},
+            {"type": "text", "text": prompt},
             {"type": "image_url", "image_url": {"url": data_url}},
         ]}],
-        "max_tokens": 900,
+        "max_tokens": max_tokens,
         "temperature": 0.1,
     }
     try:
@@ -220,58 +272,336 @@ def _apply_regions(spec: dict, regions: dict, slide_w: float, slide_h: float) ->
     return {"changed": bool(changed), "fields": changed}
 
 
-async def refine_page(user_id: str, analysis: dict, template_path: str | pathlib.Path,
-                      page: int, model_id: str = DEFAULT_VISION_MODEL,
-                      use_cache: bool = True) -> dict:
-    """用视觉模型校正模板某页的"标题/正文/配图位"。page 从 1 起。"""
+def _parse_cache_path(template_path: pathlib.Path, page: int) -> pathlib.Path:
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    return CACHE_DIR / f"{_fingerprint(template_path)}_p{page}_parse_v{PROMPT_VERSION}.json"
+
+
+def _norm_box(frame: dict, slide_w: float, slide_h: float) -> tuple[float, float, float, float]:
+    sw = slide_w or 1
+    sh = slide_h or 1
+    return (
+        float(frame.get("x") or 0) / sw,
+        float(frame.get("y") or 0) / sh,
+        float(frame.get("w") or 0) / sw,
+        float(frame.get("h") or 0) / sh,
+    )
+
+
+def _frame_line(frame: dict, slide_w: float, slide_h: float) -> str:
+    x, y, w, h = _norm_box(frame, slide_w, slide_h)
+    try:
+        size = int(frame.get("size") or 18)
+    except (TypeError, ValueError):
+        size = 18
+    text = str(frame.get("text") or "").replace("\n", " ").replace("」", "")
+    return f"F{frame.get('i')}｜位置 左{x:.2f} 上{y:.2f} 宽{w:.2f} 高{h:.2f}｜字号 {size}｜原文「{text}」"
+
+
+def _label_font(image_width: int):
+    from PIL import ImageFont
+
+    size = max(8, int(image_width * 0.016))
+    for name in ("arial.ttf", r"C:\Windows\Fonts\arial.ttf"):
+        try:
+            return ImageFont.truetype(name, size)
+        except Exception:
+            continue
+    try:
+        return ImageFont.load_default(size=size)
+    except TypeError:
+        return ImageFont.load_default()
+
+
+def _draw_tag(draw, x: int, y: int, text: str, color: str, font) -> None:
+    try:
+        box = draw.textbbox((x, y), text, font=font)
+        tw, th = box[2] - box[0], box[3] - box[1]
+    except Exception:
+        tw, th = 8 * len(text), 12
+    draw.rectangle([x, y, x + tw + 4, y + th + 2], fill="white")
+    draw.text((x + 2, y), text, fill=color, font=font)
+
+
+def mark_frames(png_path, frames, slide_w, slide_h, images=None,
+                template_path=None, page: int | None = None) -> pathlib.Path:
+    """在渲染图上给文本框画红框、给图片位画蓝框。输出尺寸与原图一致。"""
+    from PIL import Image, ImageDraw
+
+    source = pathlib.Path(png_path)
+    with Image.open(source) as raw:
+        img = raw.convert("RGB")
+    width, height = img.size
+    draw = ImageDraw.Draw(img)
+    font = _label_font(width)
+    for frame in frames or []:
+        x, y, w, h = _norm_box(frame, slide_w, slide_h)
+        left, top = int(round(x * width)), int(round(y * height))
+        right = int(round((x + w) * width))
+        bottom = int(round((y + h) * height))
+        if right <= left:
+            right = left + 2
+        if bottom <= top:
+            bottom = top + 2
+        draw.rectangle([left, top, right, bottom], outline="red", width=2)
+        _draw_tag(draw, left, top, f"F{frame.get('i')}", "red", font)
+    for slot in images or []:
+        x, y, w, h = _norm_box(slot, slide_w, slide_h)
+        left, top = int(round(x * width)), int(round(y * height))
+        right = int(round((x + w) * width))
+        bottom = int(round((y + h) * height))
+        draw.rectangle([left, top, right, bottom], outline="blue", width=2)
+        _draw_tag(draw, left, top, f"P{slot.get('i')}", "blue", font)
+
+    if page is None:
+        name = source.name
+        page = 1
+        marker = "page-"
+        if marker in name:
+            digits = name.split(marker, 1)[1].split(".", 1)[0]
+            if digits.isdigit():
+                page = int(digits)
+    finger = _fingerprint(pathlib.Path(template_path) if template_path else source)
+    dest_dir = CACHE_DIR / "marked"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / f"{finger}_p{page}.png"
+    img.save(dest)
+    return dest
+
+
+def _parse_prompt(lines: list[str]) -> str:
+    from services.ppt import ppt_roles
+
+    roles = "、".join(f"{key} {label}" for key, label in ppt_roles.NARRATIVE_ROLES.items())
+    body = PARSE_PROMPT.replace("__NARRATIVE_ROLES__", roles)
+    listing = "\n".join(lines) if lines else "（这一页没有文本框）"
+    return body + "\n\n框清单：\n" + listing
+
+
+async def parse_page(user_id: str, analysis: dict, template_path: str | pathlib.Path,
+                     page: int, model: str = DEFAULT_VISION_MODEL,
+                     force: bool = False) -> dict:
+    """看图判断模板的一页。命中缓存且 force 不为真时不调模型。"""
     from services.ppt import pptx_render
 
     source = pathlib.Path(template_path)
-    specs = analysis.get("specimens") or []
-    spec = next((s for s in specs if s["index"] == page - 1), None)
+    spec = next((item for item in (analysis or {}).get("specimens") or []
+                 if item.get("index") == page - 1), None)
+    cache = _parse_cache_path(source, page)
+    if not force and cache.is_file():
+        try:
+            cached = json.loads(cache.read_text(encoding="utf-8"))
+            if isinstance(cached.get("result"), dict):
+                return {"ok": True, "page": page, "result": cached["result"], "cached": True}
+        except Exception:
+            pass
     if spec is None:
         return {"ok": False, "error": f"模板没有第 {page} 页"}
 
-    cache = _cache_path(source, page)
-    regions: dict = {}
-    error = ""
-    image_size = (1280, 720)
-    if use_cache and cache.exists():
-        try:
-            cached = json.loads(cache.read_text(encoding="utf-8"))
-            regions = cached.get("regions") or {}
-            image_size = tuple(cached.get("image_size") or image_size)
-        except Exception:
-            regions = {}
-    if not regions:
-        images = await asyncio.to_thread(pptx_render.render_pages, source, [page], 110)
-        image = images.get(page)
-        if not image:
-            return {"ok": False, "error": pptx_render.available_reason()}
-        try:
-            from PIL import Image
+    images = await asyncio.to_thread(pptx_render.render_pages, source, [page], 110)
+    image = images.get(page)
+    if not image:
+        return {"ok": False, "error": pptx_render.available_reason() or "这一页没有渲染出图片"}
+    slide_w = (analysis or {}).get("slide_width") or 13.333
+    slide_h = (analysis or {}).get("slide_height") or 7.5
+    marked = await asyncio.to_thread(
+        mark_frames, image, spec.get("frames") or [], slide_w, slide_h,
+        spec.get("images") or [], source, page,
+    )
+    lines = [_frame_line(frame, slide_w, slide_h) for frame in (spec.get("frames") or [])]
+    for index, slot in enumerate(spec.get("images") or []):
+        x, y, w, h = _norm_box(slot, slide_w, slide_h)
+        lines.append(
+            f"P{slot.get('i', index)}｜位置 左{x:.2f} 上{y:.2f} 宽{w:.2f} 高{h:.2f}｜图片位"
+        )
+    payload, error = await _vision_call(
+        user_id, marked, model or DEFAULT_VISION_MODEL,
+        prompt=_parse_prompt(lines), max_tokens=1600,
+    )
+    if error or not payload:
+        return {"ok": False, "error": error or "模型没有返回"}
+    try:
+        cache.write_text(json.dumps({"result": payload, "model": model or DEFAULT_VISION_MODEL},
+                                    ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+    return {"ok": True, "page": page, "result": payload, "cached": False}
 
-            with Image.open(image) as img:
-                image_size = img.size
+
+async def refine_page(user_id: str, analysis: dict, template_path: str | pathlib.Path,
+                      page: int, model_id: str = DEFAULT_VISION_MODEL,
+                      use_cache: bool = True) -> dict:
+    """旧的单页校正。内部改走逐页解析，仍把格子写回这一页的 title_i / bodies_i。"""
+    from services.ppt import ppt_pages
+
+    parsed = await parse_page(user_id, analysis, template_path, page, model_id, force=not use_cache)
+    if not parsed.get("ok"):
+        return {"ok": False, "page": page, "error": parsed.get("error") or "解析失败"}
+    pages = ppt_pages.empty_pages({}, analysis)
+    ppt_pages.apply_page_parse(pages, analysis, page, parsed.get("result") or {})
+    return {"ok": True, "page": page, "model": model_id, "changed": True, "parse": parsed.get("result")}
+
+
+def _guess_page_back(template: dict, analysis: dict, page: int, pages_data: dict) -> None:
+    from services.ppt import ppt_pages
+
+    fresh = ppt_pages.empty_pages(template, analysis)
+    guessed = next((item for item in fresh.get("pages") or [] if item.get("page") == page), None)
+    if guessed is None:
+        return
+    pages = pages_data.setdefault("pages", [])
+    current = next((item for item in pages if item.get("page") == page), None)
+    if current and current.get("user_edited"):
+        merged = ppt_pages.merge_user_edits({"pages": [dict(current)]}, {"pages": [guessed]})
+        guessed = merged["pages"][0]
+    if current is None:
+        pages.append(guessed)
+    else:
+        current.clear()
+        current.update(guessed)
+
+
+async def run_parse(user_id: str, template: dict, model: str, pages: list[int],
+                    force: bool, progress: dict, text_model: str = "") -> dict:
+    """逐页解析。单页失败重试 1 次；密钥或模型不存在则整任务停下。全部试完后做一次整份归纳。"""
+    from services.ppt import ppt_pages, ppt_template
+
+    progress = progress if isinstance(progress, dict) else {}
+    template = template or {}
+    if template.get("source") == "builtin":
+        progress["status"] = "failed"
+        progress["errors"] = [{"page": 0, "error": "内置模板不能解析"}]
+        return progress
+    analysis = template
+    specs = analysis.get("specimens") or []
+    page_list = [int(p) for p in (pages or []) if 1 <= int(p) <= max(len(specs), 0)]
+    if not page_list:
+        page_list = [int(item.get("index") or 0) + 1 for item in specs]
+    progress["status"] = "running"
+    progress["total"] = len(page_list)
+    progress["done"] = 0
+    progress["errors"] = []
+    progress["current_page"] = page_list[0] if page_list else 0
+
+    pages_data = ppt_pages.load_pages(template) or ppt_pages.empty_pages(template, analysis)
+    source = template.get("file_path") or ""
+    if source and not pages_data.get("template_sha1") and pathlib.Path(source).is_file():
+        try:
+            pages_data["template_sha1"] = ppt_pages.template_sha1(source)
         except Exception:
             pass
-        regions, error = await _vision_call(user_id, pathlib.Path(image), model_id)
-        if error or not regions:
-            return {"ok": False, "error": error or "模型没有返回区域"}
-        regions = normalize_boxes(regions, image_size[0], image_size[1])
-        try:
-            cache.write_text(json.dumps({"regions": regions, "image_size": list(image_size)},
-                                        ensure_ascii=False, indent=2), encoding="utf-8")
-        except Exception:
-            pass
-
-    applied = _apply_regions(spec, regions, analysis.get("slide_width") or 13.333,
-                             analysis.get("slide_height") or 7.5)
-    return {
-        "ok": True,
-        "page": page,
-        "model": model_id,
-        "image_size": list(image_size),
-        "regions": {k: regions.get(k) for k in ("title_boxes", "body_boxes", "photo_boxes", "note")},
-        **applied,
+    pages_data["models"] = {
+        "vision": model or DEFAULT_VISION_MODEL,
+        "text": text_model or "",
     }
+    pages_data["parse"] = {
+        "status": "running",
+        "done": 0,
+        "total": len(page_list),
+        "current_page": progress["current_page"],
+        "errors": [],
+    }
+    _persist_parse(template, pages_data, analysis, save_analysis=False)
+
+    for index, page in enumerate(page_list):
+        progress["current_page"] = page
+        pages_data["parse"]["current_page"] = page
+        pages_data["parse"]["status"] = "running"
+        _persist_parse(template, pages_data, analysis, save_analysis=False)
+        outcome = await _parse_with_retry(user_id, analysis, source, page, model, force)
+        if outcome.get("fatal"):
+            err = {"page": page, "error": outcome.get("error") or "解析失败"}
+            progress["status"] = "failed"
+            progress["errors"].append(err)
+            pages_data["parse"]["status"] = "failed"
+            pages_data["parse"]["errors"] = list(progress["errors"])
+            _persist_parse(template, pages_data, analysis, save_analysis=False)
+            return pages_data
+        if not outcome.get("ok"):
+            err = {"page": page, "error": outcome.get("error") or "解析失败"}
+            progress["errors"].append(err)
+            _guess_page_back(template, analysis, page, pages_data)
+            progress["done"] = index + 1
+            pages_data["parse"]["done"] = progress["done"]
+            pages_data["parse"]["errors"] = list(progress["errors"])
+            _persist_parse(template, pages_data, analysis, save_analysis=False)
+            continue
+        ppt_pages.apply_page_parse(pages_data, analysis, page, outcome.get("result") or {})
+        progress["done"] = index + 1
+        pages_data["parse"]["done"] = progress["done"]
+        pages_data["parse"]["errors"] = list(progress["errors"])
+        _persist_parse(template, pages_data, analysis, save_analysis=True)
+
+    progress["status"] = "partial" if progress["errors"] else "done"
+    pages_data["parse"]["status"] = progress["status"]
+    pages_data["parsed_at"] = time_now()
+    await _finish_deck(user_id, pages_data, analysis, text_model)
+    _persist_parse(template, pages_data, analysis, save_analysis=True)
+    return pages_data
+
+
+async def _finish_deck(user_id: str, pages_data: dict, analysis: dict, text_model: str) -> None:
+    """逐页都试过之后归纳整份。归纳失败或超过时限，不推翻已经写好的逐页结果。"""
+    try:
+        from services.ppt import ppt_deck_parse, ppt_pages
+
+        facts = ppt_deck_parse.deck_facts(pages_data, analysis)
+        try:
+            story = await asyncio.wait_for(
+                ppt_deck_parse.deck_story(pages_data, text_model, user_id),
+                timeout=SUMMARY_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("整份归纳超过 %s 秒，简介留空", SUMMARY_TIMEOUT)
+            story = {
+                "summary": "",
+                "deck_type_hint": "",
+                "template_storyline": ppt_deck_parse.fallback_storyline(pages_data),
+            }
+        ppt_pages.write_deck(pages_data, facts, story)
+    except Exception as exc:
+        logger.warning("整份归纳没有写上：%s", exc)
+
+
+def time_now() -> str:
+    import datetime
+
+    return datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def _persist_parse(template: dict, pages_data: dict, analysis: dict, save_analysis: bool) -> None:
+    from services.ppt import ppt_pages, ppt_template
+
+    if not template.get("file_path"):
+        return
+    ppt_pages.save_pages(template, pages_data)
+    if not save_analysis:
+        return
+    path = pathlib.Path(template["file_path"]).with_suffix(".analysis.json")
+    clean = dict(analysis)
+    clean.pop("file_path", None)
+    ppt_template.save_analysis(path, clean)
+
+
+async def _parse_with_retry(user_id: str, analysis: dict, template_path: str,
+                            page: int, model: str, force: bool) -> dict:
+    last = {"ok": False, "error": "没有调用"}
+    for _attempt in range(2):
+        try:
+            last = await parse_page(user_id, analysis, template_path, page, model, force=force)
+        except Exception as exc:
+            last = {"ok": False, "error": friendly_vision_error(f"{type(exc).__name__}: {exc}")}
+        else:
+            if not last.get("ok"):
+                last = dict(last)
+                last["error"] = friendly_vision_error(str(last.get("error") or "解析失败"))[:160]
+        if last.get("ok"):
+            return last
+        if _fatal_vision_error(str(last.get("error") or "")):
+            last = dict(last)
+            last["fatal"] = True
+            last["error"] = str(last.get("error") or "")[:160]
+            return last
+    last = dict(last)
+    last["error"] = str(last.get("error") or "解析失败")[:160]
+    return last

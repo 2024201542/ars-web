@@ -31,6 +31,162 @@ async def _static_reply(text: str):
     yield {"event": "done", "data": {"message": "完成"}}
 
 
+def _plan_from_message(message: dict) -> dict | None:
+    meta = message.get("metadata")
+    if isinstance(meta, str) and meta:
+        try:
+            meta = json.loads(meta)
+        except Exception:
+            return None
+    if not isinstance(meta, dict):
+        return None
+    plan = meta.get("ppt_plan")
+    if isinstance(plan, dict) and plan.get("plan_path"):
+        return plan
+    return None
+
+
+async def _store_plan(user_id: str, save_dir, plan: dict) -> dict:
+    """把计划写进用户自己的目录，返回相对路径和 source。"""
+    from services.ppt import ppt_chat
+    from services.workspace_manager import user_dir, workspace_manager
+
+    if save_dir is None:
+        folder = user_dir(user_id) / "generated"
+    else:
+        folder = pathlib.Path(save_dir)
+    folder.mkdir(parents=True, exist_ok=True)
+    stem = ppt_chat._safe_stem((plan or {}).get("title") or "汇报")
+    path = folder / f"{stem}.ppt计划.json"
+    path.write_text(json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8")
+    local = await workspace_manager.get_local_root(user_id)
+    if local and workspace_manager._is_inside(path, pathlib.Path(local)):
+        root, source = pathlib.Path(local).resolve(), "local"
+    else:
+        root, source = user_dir(user_id).resolve(), "site"
+    rel = str(path.resolve().relative_to(root)).replace("\\", "/")
+    return {"plan_path": rel, "source": source}
+
+
+async def _store_draft(user_id: str, save_dir, title: str, text: str) -> dict:
+    """内容稿和计划放在同一个文件夹。"""
+    from services.ppt import ppt_chat
+    from services.workspace_manager import user_dir, workspace_manager
+
+    if save_dir is None:
+        folder = user_dir(user_id) / "generated"
+    else:
+        folder = pathlib.Path(save_dir)
+    folder.mkdir(parents=True, exist_ok=True)
+    stem = ppt_chat._safe_stem(title or "内容稿")
+    path = folder / f"{stem}.内容稿.md"
+    path.write_text(text, encoding="utf-8")
+    local = await workspace_manager.get_local_root(user_id)
+    if local and workspace_manager._is_inside(path, pathlib.Path(local)):
+        root, source = pathlib.Path(local).resolve(), "local"
+    else:
+        root, source = user_dir(user_id).resolve(), "site"
+    rel = str(path.resolve().relative_to(root)).replace("\\", "/")
+    return {"draft_path": rel, "source": source}
+
+
+async def _read_saved_draft(session_id: str, user_id: str, messages: list[dict]) -> tuple[str, str]:
+    """最近一份计划旁边的内容稿。返回 (相对路径, 正文)。没有就是空。"""
+    from services.workspace_manager import workspace_manager
+
+    for message in reversed(messages or []):
+        found = _plan_from_message(message)
+        if not found or not found.get("draft_path"):
+            continue
+        source = found.get("source") or "local"
+        text = await workspace_manager.get_content(
+            session_id, found["draft_path"], user_id, source)
+        return found["draft_path"], (text or "").strip()
+    return "", ""
+
+
+def _changed_pages(before: dict, after: dict) -> list[int]:
+    old = list((before or {}).get("slides") or [])
+    new = list((after or {}).get("slides") or [])
+    changed = []
+    for index in range(max(len(old), len(new))):
+        left = old[index] if index < len(old) else None
+        right = new[index] if index < len(new) else None
+        if left != right:
+            changed.append(index + 1)
+    return changed
+
+
+async def _ppt_edit_reply(user_id: str, req, plan_meta: dict):
+    """一句修改意见拆成操作，只改点到的页。"""
+    from services.ppt import ppt_edit
+
+    instruction = (getattr(req, "user_text", "") or "").strip() or (req.message or "").strip()
+    page = getattr(req, "current_page", None)
+    async for event in ppt_edit.run_instruction(
+            user_id, plan_meta.get("plan_path") or "", plan_meta.get("source") or "",
+            instruction, page, getattr(req, "model", "") or ""):
+        yield event
+
+
+async def _ppt_revise_reply(user_id: str, req, plan_meta: dict):
+    """上一条是 PPT 计划时，把这句话交给改计划，而不是普通聊天。"""
+    from routers.template_library import _resolve_user_file
+    from services.ppt import ppt_layouts, ppt_plan
+
+    instruction = (getattr(req, "user_text", "") or "").strip() or (req.message or "").strip()
+    try:
+        path, rel, source = await _resolve_user_file(
+            user_id, plan_meta.get("plan_path") or "", plan_meta.get("source") or "", (".json",))
+        plan = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        detail = getattr(exc, "detail", None) or str(exc)
+        yield {"event": "message", "data": {"delta": f"这次没能读到计划：{detail}"}}
+        yield {"event": "done", "data": {"message": "完成"}}
+        return
+    yield {"event": "phase_start", "data": {"phase": "tool", "description": "正在按你的要求改计划"}}
+    new_plan, err = await ppt_plan.revise_plan(plan, instruction, req.model or "", user_id)
+    if err and ppt_plan.parse_layout_change(instruction) is None:
+        yield {"event": "message", "data": {"delta": f"这次没能改计划：{err}"}}
+        yield {"event": "done", "data": {"message": "完成"}}
+        return
+    if err:
+        new_plan = plan
+    new_plan = ppt_plan.pin_other_pages(plan, new_plan, instruction)
+    new_plan = ppt_plan.normalize(new_plan)
+    new_plan = ppt_plan.force_layout_change(new_plan, instruction)
+    new_plan = ppt_plan.normalize(new_plan)
+    issues = ppt_plan.validate_plan(new_plan)
+    if issues:
+        new_plan = ppt_plan.hard_trim(new_plan, issues)
+    from services.ppt import ppt_story_check
+
+    new_plan["story_issues"] = ppt_story_check.check_story(new_plan)
+    path.write_text(json.dumps(new_plan, ensure_ascii=False, indent=2), encoding="utf-8")
+    changed = _changed_pages(plan, new_plan)
+    parsed = ppt_plan.parse_layout_change(instruction)
+    if parsed:
+        page, layout = parsed
+        name = ppt_layouts.LAYOUT_SPECS[layout]["name"]
+        where = f"第 {page} 页已改成{name}"
+        if 2 in changed and page != 2:
+            where += "，目录也按章节改了一下"
+    else:
+        where = "、".join(f"第 {n} 页" for n in changed[:6]) or "没有改动页"
+    yield {"event": "ppt_plan", "data": {
+        "plan_path": rel,
+        "source": source,
+        "plan": new_plan,
+        "model": req.model or "",
+        "template_id": plan_meta.get("template_id") or "",
+        "revised": True,
+        "changed_pages": changed,
+        "story_issue_count": len(new_plan.get("story_issues") or []),
+    }}
+    yield {"event": "message", "data": {"delta": f"已按你的要求改了计划（{where}）。确认后点「生成 PPT」。"}}
+    yield {"event": "done", "data": {"message": "完成"}}
+
+
 async def _ppt_reply(session_id: str, user_id: str, req, messages: list[dict]):
     """对话框里说一句要 PPT，就直接生成 .pptx 并放到附件所在文件夹。"""
     from services.ppt import ppt_chat
@@ -43,22 +199,54 @@ async def _ppt_reply(session_id: str, user_id: str, req, messages: list[dict]):
     message = (req.message or "").strip()
     if message:
         parts.append(message)
-    # 没带附件时，补上最近几条助手回复当素材
-    if "[文件:" not in message:
-        recent = [m for m in messages if m.get("role") == "assistant" and (m.get("content") or "").strip()]
-        parts.extend((m.get("content") or "").strip() for m in recent[-3:])
-    material = ppt_chat.condense_material("\n\n".join(parts))
-
+    # 文件夹和来源要先定下来，材料才知道该读哪、该不该用对话。
     paths = list(getattr(req, "attach_paths", None) or [])
     if (req.open_path or "").strip():
         paths.append(req.open_path.strip())
-    save_dir = await ppt_chat.resolve_save_dir(user_id, paths, getattr(req, "attach_source", "") or "")
+    instruction = (getattr(req, "user_text", "") or "").strip()
+    if not instruction:
+        marker = "用户问题:"
+        raw = req.message or ""
+        instruction = raw.rsplit(marker, 1)[-1].strip() if marker in raw else raw
+    folder_text = instruction + "\n" + (req.message or "")
+    save_dir, asked_folder = await ppt_chat.named_save_dir(user_id, folder_text)
+    if save_dir is None:
+        save_dir = await ppt_chat.resolve_save_dir(user_id, paths, getattr(req, "attach_source", "") or "")
     if save_dir is None:
         # 没带附件时，直接写进用户当前打开的那个本机文件夹——
         # 否则文件落在工作区 generated/，而左侧文件树显示的是本机文件夹，用户会"看不到文件"。
-        from services.workspace_manager import workspace_manager
-
         save_dir = await workspace_manager.get_local_root(user_id)
+
+    named_hit = bool(asked_folder) and save_dir is not None and save_dir.name == asked_folder
+    attached = ppt_chat.attached_names(message)
+    folder_names: list[str] = []
+    folder_empty = False
+    if named_hit:
+        folder_body, folder_names = await ppt_chat.load_folder_material(
+            user_id, session_id, save_dir, skip_names=set(attached))
+        if folder_body:
+            parts.append(folder_body)
+        elif not attached:
+            folder_empty = True
+    # 没带文件、文件夹里也没有文稿时，才用最近的讨论。状态句（已列出计划、已出片）不当材料。
+    used_discussion = False
+    if not attached and not folder_names:
+        discussion = ppt_chat.recent_discussion(messages)
+        if discussion:
+            parts.extend(discussion)
+            used_discussion = True
+    material = ppt_chat.condense_material("\n\n".join(parts))
+    material_from = ppt_chat.source_label(folder_names or attached, used_discussion)
+    draft_rel = ""
+    rebuild = ppt_chat.wants_rebuild_from_draft(instruction)
+    if rebuild:
+        draft_rel, draft_text = await _read_saved_draft(session_id, user_id, messages)
+        if not draft_text:
+            yield {"event": "message", "data": {"delta": "没有找到内容稿。先让它生成一份，改完再说「按内容稿重出计划」。"}}
+            yield {"event": "done", "data": {"message": "完成"}}
+            return
+        material = draft_text
+        material_from = pathlib.Path(draft_rel).name
 
     # 配图素材：附件里"是图片"的当配图；附了 PDF 就顺手把里面的图表抽出来当配图候选
     from services.ppt import ppt_image
@@ -74,13 +262,113 @@ async def _ppt_reply(session_id: str, user_id: str, req, messages: list[dict]):
         if ppt_image.is_image(resolved):
             image_paths.append(str(resolved))
         elif str(resolved).lower().endswith(".pdf"):
-            out_dir = (save_dir or (BACKEND_DIR / "generated")) / "_ppt_images"
+            from services.workspace_manager import user_dir
+
+            out_dir = (save_dir or (user_dir(user_id) / "generated")) / "_ppt_images"
             extracted = await asyncio.to_thread(
                 ppt_image.extract_from_pdf, str(resolved), str(out_dir), 200, 6
             )
             image_paths.extend(a["path"] for a in extracted)
             if extracted:
                 logger.info("从 PDF 抽出 %d 张图当配图", len(extracted))
+
+    if ppt_chat.current_engine() != "splice":
+        # 新路：只列计划，不直接出片。用户看过计划、确认以后再调 /api/ppt/compose。
+        from services.ppt import ppt_plan
+
+        if not rebuild and ppt_plan.needs_content_draft(material):
+            yield {"event": "phase_start",
+                   "data": {"phase": "tool", "description": "正在写内容稿（约 20–40 秒）"}}
+            draft, _, draft_err = await ppt_plan.write_content_draft(
+                user_id, material, req.model or "")
+            if draft_err or not (draft or "").strip():
+                logger.warning("内容稿没写成，按题目列计划：%s", draft_err)
+            else:
+                try:
+                    stored_draft = await _store_draft(
+                        user_id, save_dir, ppt_plan.draft_title(draft), draft)
+                except Exception as exc:
+                    logger.warning("内容稿没能存下来：%s", exc)
+                    stored_draft = {}
+                if stored_draft.get("draft_path"):
+                    draft_rel = stored_draft["draft_path"]
+                    material = draft
+                    material_from = pathlib.Path(draft_rel).name
+        yield {"event": "phase_start",
+               "data": {"phase": "tool", "description": "正在读材料、列 PPT 计划（约 20–60 秒）"}}
+        plan, used_model, err = await ppt_plan.make_plan(
+            user_id, material, model_id=req.model or "",
+            pages=int(getattr(req, "ppt_pages", 0) or 0), guidance=instruction,
+            template_id=(getattr(req, "ppt_template_id", "") or "").strip())
+        if err:
+            yield {"event": "message", "data": {"delta": f"这次没能列出 PPT 计划：{err}"}}
+            yield {"event": "done", "data": {"message": "完成"}}
+            return
+        try:
+            stored = await _store_plan(user_id, save_dir, plan)
+        except Exception as exc:
+            yield {"event": "message", "data": {"delta": f"计划没能存下来：{exc}"}}
+            yield {"event": "done", "data": {"message": "完成"}}
+            return
+        story_issues = plan.get("story_issues") or []
+        yield {"event": "ppt_plan", "data": {
+            "plan_path": stored["plan_path"],
+            "source": stored["source"],
+            "plan": plan,
+            "model": used_model,
+            "template_id": (getattr(req, "ppt_template_id", "") or "").strip(),
+            "material_from": material_from,
+            "draft_path": draft_rel,
+            "deck_type": (plan.get("storyline") or {}).get("deck_type") or "",
+            "story_issue_count": len(story_issues),
+        }}
+        place = save_dir.name if save_dir is not None else "工作区"
+        missing = ""
+        if asked_folder and (save_dir is None or save_dir.name != asked_folder):
+            missing = f"左侧没有叫「{asked_folder}」的文件夹，所以没有放进去。"
+        empty_line = "这个文件夹里没有可读的文稿，按题目来写。\n" if folder_empty else ""
+        quality = plan.get("quality") or {}
+        thin_line = ""
+        if quality.get("thin_before"):
+            thin_line = (f"内容偏薄 {quality.get('thin_before')} 页，"
+                         f"已自动充实 {quality.get('enriched') or 0} 页。\n")
+        draft_line = ""
+        if draft_rel:
+            draft_name = pathlib.Path(draft_rel).name
+            if rebuild:
+                draft_line = f"已按内容稿「{draft_name}」重出。\n"
+            else:
+                draft_line = f"内容稿已放在旁边：{draft_name}。改完可以说「按内容稿重出计划」。\n"
+        from services.ppt import ppt_story, ppt_story_check
+
+        story = plan.get("storyline") or {}
+        if story.get("sections"):
+            structure_line = "结构：" + ppt_story.structure_line(story) + "。\n"
+        elif plan.get("story_note"):
+            structure_line = str(plan["story_note"]) + "。\n"
+        else:
+            structure_line = ""
+        write_line = (str(plan["write_note"]) + "。\n") if plan.get("write_note") else ""
+        story_issues = plan.get("story_issues") or []
+        check_line = f"讲法检查：{len(story_issues)} 个问题。\n" if story_issues else "讲法检查：没有问题。\n"
+        sentence = ppt_story_check.review_sentence(plan)
+        score_line = ""
+        if sentence:
+            score_line = sentence + ("\n" if sentence.endswith("。") else "。\n")
+        yield {"event": "message", "data": {"delta": (
+            f"已列出 {len(plan.get('slides') or [])} 页计划，放在「{place}」。确认后点「生成 PPT」。\n"
+            f"材料来自：{material_from}。\n"
+            + structure_line
+            + write_line
+            + check_line
+            + score_line
+            + draft_line
+            + thin_line
+            + missing
+            + empty_line
+            + "想改就直接说，比如「第 6 页改成时间轴」「整体压到 10 页」。")}}
+        yield {"event": "done", "data": {"message": "完成"}}
+        return
 
     yield {"event": "phase_start",
            "data": {"phase": "tool", "description": "正在整理大纲并生成 PPT（约 15–60 秒）"}}
@@ -291,16 +579,46 @@ async def chat(request: Request, session_id: str, req: ChatRequest, user_id: str
     summary_voices: list[dict] = []
     # 对话框里说"根据这个写个 ppt" → 直接生成文件，不再走模型闲谈
     ppt_job = False
+    ppt_revise = None
     ppt_info: dict | None = None
+    ppt_plan_meta = None
+    ppt_edit_meta = None
     if not lit_text and skill_name not in {"idea-debate", "academic-pipeline"}:
-        from services.ppt.ppt_chat import wants_ppt
+        from services.ppt.ppt_chat import wants_plan_revise, wants_ppt, wants_rebuild_from_draft
 
         check_text = (getattr(req, "user_text", "") or "").strip()
         if not check_text:
             # 前端没单独传时，从注入的正文里把"用户问题"那段抽出来
             marker = "用户问题:"
             check_text = req.message.rsplit(marker, 1)[-1] if marker in req.message else req.message
-        ppt_job = wants_ppt(check_text)
+        ppt_job = wants_ppt(check_text) or wants_rebuild_from_draft(check_text)
+        if not ppt_job:
+            from services.ppt import ppt_edit_intent
+
+            found_plan = None
+            for message in reversed(stored_messages):
+                if message.get("role") != "assistant":
+                    continue
+                found = _plan_from_message(message)
+                if found:
+                    found_plan = found
+                    break
+            if found_plan:
+                plan_doc = None
+                if ppt_edit_intent.quick_classify(check_text) == "unsure":
+                    try:
+                        from routers.template_library import _resolve_user_file
+
+                        path, _rel, _source = await _resolve_user_file(
+                            user_id, found_plan.get("plan_path") or "",
+                            found_plan.get("source") or "", (".json",))
+                        plan_doc = json.loads(path.read_text(encoding="utf-8"))
+                    except Exception:
+                        plan_doc = None
+                decision = await ppt_edit_intent.classify(
+                    check_text, plan_doc, req.model or "", user_id)
+                if decision.get("kind") == "edit":
+                    ppt_revise = found_plan
     if literature_lookup:
         if passage_lookup:
             from services.literature_search import search_from_passage
@@ -361,6 +679,7 @@ async def chat(request: Request, session_id: str, req: ChatRequest, user_id: str
     _active_generations[session_id] = cancel_event
 
     async def event_stream():
+        nonlocal ppt_info, ppt_plan_meta, ppt_edit_meta
         assistant_parts: list[str] = []
         saw_error = False
         edits_payload = None
@@ -380,6 +699,8 @@ async def chat(request: Request, session_id: str, req: ChatRequest, user_id: str
                 yield f"event: literature\ndata: {json.dumps(lit_payload, ensure_ascii=False)}\n\n"
             if lit_text:
                 source = _static_reply(lit_text)
+            if ppt_revise:
+                source = _ppt_edit_reply(user_id, req, ppt_revise)
             elif ppt_job:
                 source = _ppt_reply(session_id, user_id, req, stored_messages)
             elif debate_job is not None and not debate_job.get("ok"):
@@ -467,6 +788,10 @@ async def chat(request: Request, session_id: str, req: ChatRequest, user_id: str
                     debate_plan = data
                 elif evt_type == "ppt_created":
                     ppt_info = data
+                elif evt_type == "ppt_plan":
+                    ppt_plan_meta = data
+                elif evt_type == "ppt_edit":
+                    ppt_edit_meta = data
                 elif evt_type == "error":
                     saw_error = True
                 if evt_type == "heartbeat":
@@ -501,6 +826,10 @@ async def chat(request: Request, session_id: str, req: ChatRequest, user_id: str
                 assistant_meta_obj["debate_plan"] = debate_plan
             if ppt_info:
                 assistant_meta_obj["ppt"] = ppt_info
+            if ppt_plan_meta:
+                assistant_meta_obj["ppt_plan"] = ppt_plan_meta
+            if ppt_edit_meta:
+                assistant_meta_obj["ppt_edit"] = ppt_edit_meta
             if lit_payload and not saw_error:
                 assistant_meta_obj["literature"] = lit_payload
             assistant_meta = json.dumps(assistant_meta_obj, ensure_ascii=False)

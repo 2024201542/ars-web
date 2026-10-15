@@ -21,10 +21,15 @@
         <button
           v-if="current && current.source === 'user'"
           class="px-2.5 py-1 rounded-lg border border-ruc-divider text-[11px] font-ui text-ruc-text-dim hover:border-ruc-red/40 hover:text-ruc-red"
-          :disabled="refining"
-          :title="'让 qwen-vl 看一遍这张模板，校正标题/正文/配图位（约 30 秒）'"
-          @click="runVisionRefine"
-        >{{ refining ? '校正中…' : '视觉校正' }}</button>
+          :disabled="parsing"
+          title="逐页看图，写出每一页的角色、形态和格子。可以关掉窗口，进度会留着"
+          @click="parseAsk = true"
+        >{{ parsing ? '解析中…' : '解析模板' }}</button>
+        <button
+          v-if="current"
+          class="px-2.5 py-1 rounded-lg border border-ruc-divider text-[11px] font-ui text-ruc-text-dim hover:border-ruc-red/40 hover:text-ruc-red"
+          @click="pagesOpen = true"
+        >页说明</button>
         <button
           v-if="current && current.source === 'user'"
           class="px-2.5 py-1 rounded-lg border border-ruc-divider text-[11px] font-ui text-ruc-text-dim hover:border-ruc-red/40 hover:text-ruc-red"
@@ -32,6 +37,13 @@
           title="把「整页导出成图片、字改不了」的页重建成可编辑页（每页约 5 秒）"
           @click="runRebuild"
         >{{ rebuilding ? '重建中…' : '重建图片页' }}</button>
+        <button
+          v-if="current"
+          class="px-2.5 py-1 rounded-lg border border-ruc-divider text-[11px] font-ui text-ruc-text-dim hover:border-ruc-red/40 hover:text-ruc-red"
+          :disabled="baseBusy"
+          title="指定这套模板用哪几页当封面、转场、内容页和结尾；出片时按这四页的页眉、校徽、页码和配色画内容"
+          @click="openBase"
+        >{{ baseBusy ? '读底板…' : '设置底板' }}</button>
         <a
           class="px-2.5 py-1 rounded-lg border border-ruc-divider text-[11px] font-ui text-ruc-text-dim hover:border-ruc-red/40 hover:text-ruc-red"
           href="#/ppt"
@@ -41,6 +53,80 @@
         <input ref="fileInput" type="file" accept=".pptx" class="hidden" @change="onFile" />
         <input ref="shotInput" type="file" accept="image/*" multiple class="hidden" @change="onShots" />
       </header>
+
+      <!-- 设置底板：指定封面/转场/内容页/结尾各用哪一页 -->
+      <div v-if="baseOpen" class="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4" @click.self="baseOpen = false">
+        <div class="w-full max-w-3xl max-h-[88vh] bg-white rounded-2xl border border-ruc-divider shadow-modal flex flex-col overflow-hidden">
+          <header class="flex items-center gap-2 px-4 py-3 border-b border-ruc-divider">
+            <LayoutTemplate class="w-4 h-4 text-ruc-red" />
+            <h3 class="text-sm font-ui font-semibold text-ruc-text">设置底板</h3>
+            <span class="text-[10px] font-ui text-ruc-text-light">{{ currentName }}</span>
+            <button class="ml-auto p-1 rounded hover:bg-ruc-warm text-ruc-text-light" @click="baseOpen = false">
+              <X class="w-4 h-4" />
+            </button>
+          </header>
+
+          <div class="flex-1 min-h-0 overflow-auto p-4 space-y-3">
+            <p class="text-[11px] font-ui text-ruc-text-dim leading-relaxed">
+              这四页是<b>底板</b>：页眉、校徽、页码和配色。封面、转场、结尾只用这里指定的页。
+              内容页会从其余页里挑：版式对得上就用那一页，对不上就用其余的图文页来填字。
+              一整页都是图片、没有文本框时，才在内容页底板的安全区里重画。
+            </p>
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <label v-for="role in BASE_ROLES" :key="role.key" class="text-[11px] font-ui text-ruc-text-dim">
+                {{ role.label }}
+                <select
+                  v-model.number="basePages[role.key]"
+                  class="mt-1 w-full rounded-lg border border-ruc-divider px-2 py-1 text-[11px] font-ui bg-white"
+                >
+                  <option v-for="p in (currentSlides || 0)" :key="role.key + '-' + p" :value="p">第 {{ p }} 页</option>
+                </select>
+              </label>
+            </div>
+
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-2">
+              <div v-for="role in BASE_ROLES" :key="'pv-' + role.key" class="rounded-lg border border-ruc-divider overflow-hidden">
+                <div class="relative bg-ruc-warm/50" style="aspect-ratio: 16 / 9">
+                  <img
+                    v-if="selectedId"
+                    :src="api.getPptTemplateThumbUrl(selectedId, basePages[role.key])"
+                    class="absolute inset-0 w-full h-full object-cover"
+                    alt=""
+                  />
+                </div>
+                <p class="px-1.5 py-1 text-[10px] font-ui text-ruc-text-dim">
+                  {{ role.label }} · 第 {{ basePages[role.key] }} 页
+                </p>
+              </div>
+            </div>
+
+            <div v-if="selectedId" class="rounded-lg border border-ruc-divider overflow-hidden">
+              <p class="px-2 py-1 text-[10px] font-ui text-ruc-text-dim">内容页清空后的样子（示例字会被去掉）</p>
+              <img
+                :src="api.getPptBasePreviewUrl(selectedId, basePages.content)"
+                class="w-full bg-ruc-warm/40"
+                alt="清空后的内容页"
+              />
+            </div>
+
+            <div v-if="baseData" class="rounded-lg border border-ruc-divider px-3 py-2 text-[10px] font-ui text-ruc-text-dim space-y-0.5">
+              <p>安全区：{{ (baseData.safe_area || []).join(', ') }} 英寸（内容只画在这一块里）</p>
+              <p>主色：{{ baseData.colors?.accent }}　浅底色：{{ baseData.colors?.accent_soft }}</p>
+              <p v-if="!baseData.confirmed" class="text-amber-600">这份档案是程序自动猜的，看清上面四页对不对，再保存。</p>
+            </div>
+          </div>
+
+          <footer class="flex items-center gap-2 px-4 py-3 border-t border-ruc-divider">
+            <p class="text-[10px] font-ui text-ruc-text-light">保存后，这套模板下次出片就用这份底板。</p>
+            <button class="ml-auto px-3 py-1.5 rounded-lg border border-ruc-divider text-[11px] font-ui text-ruc-text-dim" @click="baseOpen = false">取消</button>
+            <button
+              class="px-3 py-1.5 rounded-lg bg-ruc-red text-white text-[11px] font-ui disabled:opacity-50"
+              :disabled="baseSaving"
+              @click="saveBase"
+            >{{ baseSaving ? '保存中…' : '保存底板' }}</button>
+          </footer>
+        </div>
+      </div>
 
       <div class="flex-1 min-h-0 flex">
         <!-- 左：模板列表 -->
@@ -77,6 +163,12 @@
             </span>
             <span class="min-w-0 flex-1">
               <span class="block text-[11px] font-ui text-ruc-text truncate">{{ tpl.name }}</span>
+              <span class="mt-0.5 inline-flex items-center gap-1 text-[9px] font-ui" :class="statusClass(tpl)" :title="statusTitle(tpl)">
+                {{ statusText(tpl) }}
+              </span>
+              <span v-if="liveOf(tpl).status === 'running'" class="mt-1 block h-1 rounded bg-ruc-warm overflow-hidden">
+                <span class="block h-full bg-blue-600" :style="{ width: progressPct(tpl) }"></span>
+              </span>
               <span class="block text-[9px] font-ui text-ruc-text-light mt-0.5">
                 {{ tpl.source === 'builtin' ? '内置' : '我的' }} · {{ tpl.slides }} 页
               </span>
@@ -168,15 +260,34 @@
         </button>
       </footer>
     </div>
+    <div v-if="parseAsk" class="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4">
+      <div class="w-full max-w-md rounded-2xl bg-white border border-ruc-divider p-4 space-y-3">
+        <p class="text-[13px] font-ui text-ruc-text leading-relaxed">
+          会把这份 {{ currentSlides }} 页逐页发给看图模型，大约需要 {{ parseMinutes }} 分钟（按每页 15 秒估），期间可以关掉这个窗口。
+        </p>
+        <p v-if="parseError" class="text-[11px] font-ui text-amber-800">{{ parseError }} 可以到设置里换密钥后再试。</p>
+        <div class="flex justify-end gap-2">
+          <button type="button" class="px-3 py-1 rounded-lg border border-ruc-divider text-[12px] font-ui" @click="parseAsk = false">取消</button>
+          <button type="button" class="px-3 py-1 rounded-lg bg-ruc-red text-white text-[12px] font-ui" @click="runParse">开始解析</button>
+        </div>
+      </div>
+    </div>
+    <PptTemplatePages
+      v-if="pagesOpen && selectedId"
+      :template-id="selectedId"
+      @close="pagesOpen = false"
+      @saved-local="emit('saved-local')"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { api } from '@/api'
 import { toast } from '@/composables/useToast'
 import type { PptTemplate } from '@/types'
 import { LayoutTemplate, Presentation, X, Trash2 } from 'lucide-vue-next'
+import PptTemplatePages from '@/components/PptTemplatePages.vue'
 
 const props = defineProps<{
   templateId?: string
@@ -184,7 +295,8 @@ const props = defineProps<{
 }>()
 const emit = defineEmits<{
   (e: 'close'): void
-  (e: 'confirm', payload: { templateId: string; pages: number; name: string }): void
+  (e: 'confirm', payload: { templateId: string; pages: number; name: string; autoImage?: boolean }): void
+  (e: 'saved-local'): void
 }>()
 
 const templates = ref<PptTemplate[]>([])
@@ -197,8 +309,13 @@ const previewNonce = ref(0)
 const thumbs = ref<Record<string, 'ok' | 'failed'>>({})
 const uploading = ref(false)
 const shotBusy = ref(false)
-const refining = ref(false)
 const rebuilding = ref(false)
+const parsing = ref(false)
+const parseAsk = ref(false)
+const parseError = ref('')
+const pagesOpen = ref(false)
+const parseLive = ref<Record<string, { status: string; done: number; total: number; errors: { page: number; error: string }[] }>>({})
+let pollTimer: number | null = null
 const autoImage = ref(false)
 const fileInput = ref<HTMLInputElement | null>(null)
 const shotInput = ref<HTMLInputElement | null>(null)
@@ -208,6 +325,7 @@ const mine = computed(() => templates.value.filter((t) => t.source === 'user').l
 const current = computed(() => templates.value.find((t) => t.id === selectedId.value))
 const currentSlides = computed(() => current.value?.slides || 0)
 const currentName = computed(() => current.value?.name || '（不用模板）')
+const parseMinutes = computed(() => Math.max(1, Math.ceil((currentSlides.value || 1) * 15 / 60)))
 const previewSrc = computed(() =>
   selectedId.value
     ? `${api.getPptTemplateThumbUrl(selectedId.value, previewPage.value)}${previewNonce.value ? `&r=${previewNonce.value}` : ''}`
@@ -286,25 +404,89 @@ async function onShots(event: Event) {
   }
 }
 
-async function runVisionRefine() {
+async function runParse() {
   const tpl = current.value
-  if (!tpl || refining.value) return
-  refining.value = true
-  toast.info('正在让 qwen-vl 看这张模板的版面，约 30 秒…')
+  if (!tpl || parsing.value) return
+  parseAsk.value = false
+  parsing.value = true
+  parseError.value = ''
   try {
-    const res = await api.visionRefineTemplate(tpl.id)
-    if (!res.refined) {
-      toast.error('没校正成功：' + (res.results?.[0]?.error || '未知原因'))
-    } else {
-      toast.success(`视觉校正完成：看了 ${res.refined} 页，改动了 ${res.changed} 页`)
-    }
-    // 角色/框位变了，让外面按新映射重挑样本
-    thumbs.value = { ...thumbs.value }
+    await api.parsePptTemplate(tpl.id, {})
+    tpl.pages_status = 'running'
+    await refreshParse(tpl.id)
+    ensurePoll()
   } catch (e: any) {
-    toast.error(e.message || '视觉校正失败')
+    parseError.value = e.message || '解析没有启动'
+    parseAsk.value = true
+    toast.error((e.message || '解析没有启动') + ' 可以到设置里换密钥后再试。')
   } finally {
-    refining.value = false
+    parsing.value = false
   }
+}
+
+function liveOf(tpl: PptTemplate) {
+  return parseLive.value[tpl.id] || { status: tpl.pages_status || 'none', done: 0, total: tpl.slides || 0, errors: [] }
+}
+
+function statusText(tpl: PptTemplate) {
+  const live = liveOf(tpl)
+  const status = live.status === 'running' ? 'running' : (tpl.pages_status || 'none')
+  if (status === 'running') return `解析中 ${live.done || 0}/${live.total || tpl.slides || 0}`
+  if (status === 'done') return '已解析'
+  if (status === 'stale') return '模板改过，需重新解析'
+  if (status === 'partial' || status === 'failed') return '部分页失败'
+  return '未解析'
+}
+
+function statusClass(tpl: PptTemplate) {
+  const text = statusText(tpl)
+  if (text.startsWith('解析中')) return 'text-blue-700'
+  if (text === '已解析') return 'text-emerald-700'
+  if (text === '未解析') return 'text-ruc-text-light'
+  return 'text-amber-700'
+}
+
+function statusTitle(tpl: PptTemplate) {
+  const errors = liveOf(tpl).errors || []
+  if (!errors.length) return ''
+  return errors.map((item) => `第 ${item.page} 页 ${item.error}`).join('；')
+}
+
+function progressPct(tpl: PptTemplate) {
+  const live = liveOf(tpl)
+  const total = live.total || tpl.slides || 1
+  return `${Math.min(100, Math.round(((live.done || 0) / total) * 100))}%`
+}
+
+async function refreshParse(id: string) {
+  const view = await api.getPptTemplateParse(id)
+  parseLive.value = { ...parseLive.value, [id]: view }
+  const tpl = templates.value.find((item) => item.id === id)
+  if (!tpl) return view
+  if (view.status === 'running') tpl.pages_status = 'running'
+  else if (view.status === 'failed' || (view.errors || []).length) tpl.pages_status = 'partial'
+  else if (view.status === 'done') tpl.pages_status = 'done'
+  if (view.status === 'failed' && view.errors?.length) {
+    parseError.value = view.errors.map((item) => item.error).join('；')
+  }
+  return view
+}
+
+function ensurePoll() {
+  if (pollTimer) return
+  pollTimer = window.setInterval(async () => {
+    const ids = templates.value
+      .filter((tpl) => tpl.pages_status === 'running' || parseLive.value[tpl.id]?.status === 'running')
+      .map((tpl) => tpl.id)
+    if (!ids.length) {
+      if (pollTimer) window.clearInterval(pollTimer)
+      pollTimer = null
+      return
+    }
+    for (const id of ids) {
+      try { await refreshParse(id) } catch { /* 下一轮再问 */ }
+    }
+  }, 3000)
 }
 
 async function runRebuild() {
@@ -348,6 +530,62 @@ function confirm() {
   emit('close')
 }
 
+// ── 设置底板：指定这套模板的封面 / 转场 / 内容页 / 结尾 ──
+const BASE_ROLES = [
+  { key: 'cover', label: '封面' },
+  { key: 'section', label: '转场' },
+  { key: 'content', label: '内容页' },
+  { key: 'end', label: '结尾' },
+]
+const baseOpen = ref(false)
+const baseBusy = ref(false)
+const baseSaving = ref(false)
+const baseData = ref<any>(null)
+const basePages = ref<Record<string, number>>({ cover: 1, section: 2, content: 3, end: 1 })
+
+async function openBase() {
+  const tpl = current.value
+  if (!tpl) return
+  baseOpen.value = true
+  baseBusy.value = true
+  try {
+    const data = await api.getPptTemplateBase(tpl.id)
+    baseData.value = data.base
+    const total = currentSlides.value || 1
+    const pages = data.base?.pages || {}
+    basePages.value = {
+      cover: pages.cover || 1,
+      section: pages.section || Math.min(2, total),
+      content: pages.content || Math.min(3, total),
+      end: pages.end || total,
+    }
+  } catch (e: any) {
+    toast.error('底板档案读不到：' + (e.message || e))
+    baseOpen.value = false
+  } finally {
+    baseBusy.value = false
+  }
+}
+
+async function saveBase() {
+  const tpl = current.value
+  if (!tpl || baseSaving.value) return
+  baseSaving.value = true
+  try {
+    const payload = { ...(baseData.value || {}), pages: { ...basePages.value } }
+    const res = await api.putPptTemplateBase(tpl.id, payload)
+    baseData.value = res.base
+    toast.success('底板已保存，这套模板下次出片就用它')
+    baseOpen.value = false
+  } catch (e: any) {
+    toast.error(e.message || '保存底板失败')
+  } finally {
+    baseSaving.value = false
+  }
+}
+
+defineExpose({ openBase })
+
 async function onMountedLoad() {
   try {
     const data = await api.listPptTemplates()
@@ -356,6 +594,11 @@ async function onMountedLoad() {
       const hit = templates.value.find((t) => t.id === selectedId.value)
       if (!hit) selectedId.value = ''
     }
+    const watch = templates.value.filter((tpl) => tpl.pages_status === 'running' || tpl.pages_status === 'partial')
+    for (const tpl of watch) {
+      try { await refreshParse(tpl.id) } catch { /* 状态标签先用列表里的 */ }
+    }
+    if (templates.value.some((tpl) => tpl.pages_status === 'running')) ensurePoll()
   } catch (e: any) {
     toast.error('模板库读不到：' + (e.message || e))
   }
@@ -363,5 +606,8 @@ async function onMountedLoad() {
 
 onMounted(() => {
   void onMountedLoad()
+})
+onUnmounted(() => {
+  if (pollTimer) window.clearInterval(pollTimer)
 })
 </script>

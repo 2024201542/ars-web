@@ -440,6 +440,7 @@ watch(() => workspaceStore.source + '|' + workspaceStore.rootPath, () => {
             @done="onChatDone"
             @wrote="onWrote"
             @generated="onGeneratedFile"
+            @open-file="openPreview"
           />
         </div>
       </div>

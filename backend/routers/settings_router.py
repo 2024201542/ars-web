@@ -25,6 +25,13 @@ class SettingsUpdate(BaseModel):
     zhipu_base_url: Optional[str] = None
     deepseek_base_url: Optional[str] = None
     qwen_base_url: Optional[str] = None
+    ppt_review_enabled: Optional[str] = None
+
+
+def _review_on(raw) -> bool:
+    if raw is None or str(raw).strip() == "":
+        return True
+    return str(raw).strip().lower() not in {"0", "false", "off", "关"}
 
 
 @router.get("")
@@ -53,6 +60,7 @@ async def get_settings(user_id: str = Depends(get_user_id)):
         "anthropic_key_configured": inspect_secret(
             "anthropic_api_key", settings.get("anthropic_api_key", "") or ""
         )[0],
+        "ppt_review_enabled": _review_on(settings.get("ppt_review_enabled")),
     }
 
 

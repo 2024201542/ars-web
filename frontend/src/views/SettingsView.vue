@@ -58,6 +58,16 @@ async function saveProviderBaseUrl(pid: string) {
 }
 
 async function handleModelChange(mid: string) { await settings.setModel(mid); toast.success('模型已切换') }
+
+async function toggleReview(event: Event) {
+  const on = (event.target as HTMLInputElement).checked
+  try {
+    await settings.setPptReviewEnabled(on)
+    toast.success(on ? '衔接审稿已打开' : '衔接审稿已关掉')
+  } catch (e: any) {
+    toast.error(e.message || '保存失败')
+  }
+}
 </script>
 
 <template>
@@ -73,6 +83,19 @@ async function handleModelChange(mid: string) { await settings.setModel(mid); to
 
     <main class="flex-1 py-8 px-5">
       <div class="max-w-3xl mx-auto space-y-6">
+
+        <label class="flex items-start gap-3 p-4 rounded-xl bg-white border border-ruc-divider">
+          <input
+            type="checkbox"
+            class="mt-1"
+            :checked="settings.pptReviewEnabled"
+            @change="toggleReview"
+          />
+          <span>
+            <span class="block text-sm font-ui text-ruc-text">出计划后做衔接审稿</span>
+            <span class="block text-[11px] font-ui text-ruc-text-dim">打开后另请模型给衔接打分，并改最多两轮。关掉后只查讲法规则。</span>
+          </span>
+        </label>
 
         <!-- Provider Tab bar -->
         <div class="flex gap-1 bg-ruc-card rounded-xl p-1.5 border border-ruc-divider shadow-card overflow-x-auto">

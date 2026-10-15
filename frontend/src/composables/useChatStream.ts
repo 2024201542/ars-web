@@ -17,6 +17,8 @@ export function useChatStream(getSessionId: () => string, emitDone: () => void) 
   const liveStream = ref<{ key: string; kind: string; name: string; round: number; thinking: string; answer: string } | null>(null)
   // 对话里直接生成的 PPT（用于刷新文件栏 + 弹提示）
   const lastPpt = ref<any>(null)
+  // 对话里列出的 PPT 计划（新引擎：先给计划，用户确认后再出片）
+  const lastPptPlan = ref<any>(null)
 
   const statusText = computed(() => {
     if (lastToolUse.value) return `正在使用工具：${lastToolUse.value}`
@@ -40,7 +42,7 @@ export function useChatStream(getSessionId: () => string, emitDone: () => void) 
     return l && l.role === 'assistant' ? l : null
   }
 
-  async function sendMessage(msg: string, modelToUse?: string, openPath?: string, pipelineAction?: string, debateModels?: string[], debate?: DebatePayload, attach?: { paths: string[]; source?: string; userText?: string; pptTemplateId?: string; pptPages?: number; pptAutoImage?: boolean }) {
+  async function sendMessage(msg: string, modelToUse?: string, openPath?: string, pipelineAction?: string, debateModels?: string[], debate?: DebatePayload, attach?: { paths: string[]; source?: string; userText?: string; pptTemplateId?: string; pptPages?: number; pptAutoImage?: boolean; currentPage?: number }) {
     if (isStreaming.value) return
     isStreaming.value = true; resultContent.value = ''
     progressTokens.value = 0; progressPhase.value = ''; lastToolUse.value = ''
@@ -92,6 +94,14 @@ export function useChatStream(getSessionId: () => string, emitDone: () => void) 
           // 对话里一句话生成的 PPT：挂到消息上，并通知外面刷新文件栏
           if (l) (l as any).ppt = d
           lastPpt.value = d
+        }
+        else if (pen.evt === 'ppt_plan') {
+          // 计划卡片挂在当前这条回复上，生成 PPT 就在这句话下面
+          if (l) (l as any).pptPlan = d
+          lastPptPlan.value = d
+        }
+        else if (pen.evt === 'ppt_edit') {
+          if (l) (l as any).pptEdit = d
         }
         else if (pen.evt === 'debate_pause' && l) { l.debateHold = d }
         else if (pen.evt === 'debate_stream') {
@@ -172,5 +182,5 @@ export function useChatStream(getSessionId: () => string, emitDone: () => void) 
     finally { isStreaming.value = false; emitDone() }
   }
 
-  return { isStreaming, resultContent, progressTokens, progressPhase, lastToolUse, statusText, liveStream, lastPpt, sendMessage, abort: ()=> { isStreaming.value = false } }
+  return { isStreaming, resultContent, progressTokens, progressPhase, lastToolUse, statusText, liveStream, lastPpt, lastPptPlan, sendMessage, abort: ()=> { isStreaming.value = false } }
 }
